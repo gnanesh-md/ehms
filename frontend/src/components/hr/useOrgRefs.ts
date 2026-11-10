@@ -27,7 +27,12 @@ export default function useOrgRefs(version = 0) {
         hr.get<Department[]>("/api/v1/hr/departments"),
         hr.get<Designation[]>("/api/v1/hr/designations"),
       ]).then(([hospitals, branches, departments, designations]) => {
-        const refs = { hospitals, branches, departments, designations }
+        const refs = {
+          hospitals: Array.isArray(hospitals) ? hospitals : [],
+          branches: Array.isArray(branches) ? branches : [],
+          departments: Array.isArray(departments) ? departments : [],
+          designations: Array.isArray(designations) ? designations : [],
+        }
         memoryCache = refs
         return refs
       }).finally(() => {

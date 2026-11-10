@@ -70,8 +70,9 @@ const ICON = { hospital: Building2, branch: GitBranch, department: Layers, unit:
 
 function TreeItem({ node, depth }: { node: TreeNode; depth: number }) {
   const [open, setOpen] = useState(depth < 2)
-  const Icon = ICON[node.type]
-  const hasKids = node.children.length > 0
+  const Icon = (node?.type && ICON[node.type]) || Layers
+  const children = Array.isArray(node?.children) ? node.children : []
+  const hasKids = children.length > 0
   return (
     <li>
       <button
@@ -85,11 +86,11 @@ function TreeItem({ node, depth }: { node: TreeNode; depth: number }) {
         <span className="text-sm font-medium text-gray-900">{node.name}</span>
         <span className="text-[11px] text-[#64748B] font-mono">{node.code}</span>
         {node.head_name && <span className="text-[11px] text-[#64748B]">· Head: {node.head_name}</span>}
-        {node.type !== "unit" && <span className="ml-auto text-[11px] text-[#64748B] font-mono tabular-nums">{node.headcount} staff</span>}
+        {node.type !== "unit" && <span className="ml-auto text-[11px] text-[#64748B] font-mono tabular-nums">{node.headcount ?? 0} staff</span>}
       </button>
       {open && hasKids && (
         <ul>
-          {node.children.map((c) => (
+          {children.map((c) => (
             <TreeItem key={c.id} node={c} depth={depth + 1} />
           ))}
         </ul>
@@ -110,8 +111,10 @@ function Departments({ refs, canEdit, onChange }: { refs: NonNullable<ReturnType
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
   const [unitFor, setUnitFor] = useState<Department | null>(null)
-  const byId = Object.fromEntries(refs.departments.map((d) => [d.id, d]))
-  const branchName = Object.fromEntries(refs.branches.map((b) => [b.id, b.name]))
+  const deptList = Array.isArray(refs?.departments) ? refs.departments : []
+  const branchList = Array.isArray(refs?.branches) ? refs.branches : []
+  const byId = Object.fromEntries(deptList.map((d) => [d.id, d]))
+  const branchName = Object.fromEntries(branchList.map((b) => [b.id, b.name]))
 
   const open = (d: Department | null) => {
     setErrors({})
@@ -174,11 +177,11 @@ function Departments({ refs, canEdit, onChange }: { refs: NonNullable<ReturnType
         </Btn>
       )}
     >
-      {refs.departments.length === 0 ? (
+      {deptList.length === 0 ? (
         <Empty title="No departments yet" hint="Create departments such as ICU, Emergency, OT and Radiology to assign staff to them." />
       ) : (
         <Table head={["Code", "Department", "Parent", "Branch", "Type", "Head", "Staff", "Budget", ""]}>
-          {refs.departments.map((d) => (
+          {deptList.map((d) => (
             <tr key={d.id} className="hover:bg-gray-50/80 transition-colors">
               <td className="px-4 py-2 font-mono text-xs text-[#64748B]">{d.code}</td>
               <td className="px-4 py-2 font-semibold text-gray-900">{d.name}</td>
@@ -242,7 +245,7 @@ function Departments({ refs, canEdit, onChange }: { refs: NonNullable<ReturnType
           <Field label="Parent department" hint="Set to make this a sub-department">
             <select className={inputCls} value={form.parent_id} onChange={(e) => setForm({ ...form, parent_id: e.target.value })}>
               <option value="">None</option>
-              {refs.departments
+              {deptList
                 .filter((d) => d.id !== editing?.id)
                 .map((d) => (
                   <option key={d.id} value={d.id}>
@@ -254,7 +257,7 @@ function Departments({ refs, canEdit, onChange }: { refs: NonNullable<ReturnType
           <Field label="Branch">
             <select className={inputCls} value={form.branch_id} onChange={(e) => setForm({ ...form, branch_id: e.target.value })}>
               <option value="">All branches</option>
-              {refs.branches.map((b) => (
+              {branchList.map((b) => (
                 <option key={b.id} value={b.id}>
                   {b.name}
                 </option>
@@ -349,6 +352,7 @@ function Designations({ items, canEdit, onChange }: { items: Designation[]; canE
   const [form, setForm] = useState<typeof blank | null>(null)
   const [editId, setEditId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const desigList = Array.isArray(items) ? items : []
 
   const save = async () => {
     if (!form) return
@@ -378,11 +382,11 @@ function Designations({ items, canEdit, onChange }: { items: Designation[]; canE
         </Btn>
       )}
     >
-      {items.length === 0 ? (
+      {desigList.length === 0 ? (
         <Empty title="No designations yet" hint="For example Staff Nurse, Consultant Cardiologist, Lab Technician." />
       ) : (
         <Table head={["Code", "Title", "Category", "Grade", "Clinical", "Registration", "Staff", ""]}>
-          {items.map((d) => (
+          {desigList.map((d) => (
             <tr key={d.id} className="hover:bg-gray-50/80 transition-colors">
               <td className="px-4 py-2 font-mono text-xs text-[#64748B]">{d.code}</td>
               <td className="px-4 py-2 font-semibold text-gray-900">{d.title}</td>
@@ -466,6 +470,8 @@ function Sites({ refs, canEdit, onChange }: { refs: NonNullable<ReturnType<typeo
   const [hospital, setHospital] = useState({ code: "", name: "" })
   const [branch, setBranch] = useState({ hospital_id: "", code: "", name: "", city: "" })
   const [busy, setBusy] = useState<string | null>(null)
+  const hospList = Array.isArray(refs?.hospitals) ? refs.hospitals : []
+  const branchList = Array.isArray(refs?.branches) ? refs.branches : []
 
   const submit = async (kind: "hospital" | "branch") => {
     setBusy(kind)
@@ -489,11 +495,11 @@ function Sites({ refs, canEdit, onChange }: { refs: NonNullable<ReturnType<typeo
   return (
     <div className="grid lg:grid-cols-2 gap-4">
       <Panel title="Hospitals">
-        {refs.hospitals.length === 0 ? (
+        {hospList.length === 0 ? (
           <Empty title="No hospital yet" />
         ) : (
           <ul className="divide-y divide-[#EEF1F6] mb-4">
-            {refs.hospitals.map((h) => (
+            {hospList.map((h) => (
               <li key={h.id} className="py-2 text-sm flex justify-between">
                 <span className="font-medium text-gray-900">{h.name}</span>
                 <span className="font-mono text-xs text-[#64748B]">{h.code}</span>
@@ -516,11 +522,11 @@ function Sites({ refs, canEdit, onChange }: { refs: NonNullable<ReturnType<typeo
         )}
       </Panel>
       <Panel title="Branches">
-        {refs.branches.length === 0 ? (
+        {branchList.length === 0 ? (
           <Empty title="No branches yet" />
         ) : (
           <ul className="divide-y divide-[#EEF1F6] mb-4">
-            {refs.branches.map((b) => (
+            {branchList.map((b) => (
               <li key={b.id} className="py-2 text-sm flex justify-between">
                 <span>
                   <span className="font-medium text-gray-900">{b.name}</span>
@@ -531,12 +537,12 @@ function Sites({ refs, canEdit, onChange }: { refs: NonNullable<ReturnType<typeo
             ))}
           </ul>
         )}
-        {canEdit && refs.hospitals.length > 0 && (
+        {canEdit && hospList.length > 0 && (
           <div className="grid grid-cols-2 gap-2 items-end">
             <Field label="Hospital">
               <select className={inputCls} value={branch.hospital_id} onChange={(e) => setBranch({ ...branch, hospital_id: e.target.value })}>
                 <option value="">Select…</option>
-                {refs.hospitals.map((h) => (
+                {hospList.map((h) => (
                   <option key={h.id} value={h.id}>
                     {h.name}
                   </option>

@@ -150,6 +150,18 @@ function sanitizeHrResponse(path: string, data: any): any {
     return []
   }
 
+  if (path.includes("/organization/tree")) {
+    const sanitizeNode = (node: any): any => {
+      if (!node || typeof node !== "object") return node
+      return {
+        ...node,
+        children: Array.isArray(node.children) ? node.children.map(sanitizeNode) : [],
+        headcount: Number(node.headcount ?? 0),
+      }
+    }
+    return Array.isArray(data) ? data.map(sanitizeNode) : []
+  }
+
   return data
 }
 
