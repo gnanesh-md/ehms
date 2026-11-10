@@ -3133,7 +3133,8 @@ const DocumentVault = ({ onNavigate }: { onNavigate: (s: Screen) => void }) => {
         document.body.appendChild(a)
         a.click()
         a.remove()
-        URL.revokeObjectURL(url)
+        // Revoking synchronously can cancel the download in Firefox/Safari.
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
       } else {
         // Authenticated fetch for binary files
         const blob = await vaultApi.downloadExport(doc.id, format)
@@ -3144,7 +3145,8 @@ const DocumentVault = ({ onNavigate }: { onNavigate: (s: Screen) => void }) => {
         document.body.appendChild(a)
         a.click()
         a.remove()
-        URL.revokeObjectURL(url)
+        // Revoking synchronously can cancel the download in Firefox/Safari.
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
       }
     } catch (e) {
       setNotice("Failed to download document. Please try again.")

@@ -318,7 +318,7 @@ def generate_summary_pdf(summary_md: str, patient_name: str, ip_no: str, doctor:
             pass
 
         out = io.BytesIO()
-        status = pisa.CreatePDF(io.StringIO(html), dest=out, encoding="utf-8")
+        status = pisa.CreatePDF(html, dest=out)
         if status.err:
             raise RuntimeError(f"PDF generation failed: {status.err}")
         return out.getvalue()

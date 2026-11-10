@@ -97,7 +97,8 @@ async function downloadBlob(path: string, filename: string) {
   document.body.appendChild(a)
   a.click()
   a.remove()
-  URL.revokeObjectURL(url)
+  // Revoking synchronously can cancel the download in Firefox/Safari.
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 // ─── Auth ──────────────────────────────────────────────────────────────────

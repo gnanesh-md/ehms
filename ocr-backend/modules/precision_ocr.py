@@ -1094,7 +1094,7 @@ def generate_pro_pdf(md_text: str, client_name: str) -> bytes | str:
             logger.info(f"WeasyPrint rendering unavailable ({weasy_err}), using xhtml2pdf fallback")
 
         out = io.BytesIO()
-        status = pisa.CreatePDF(io.StringIO(html), dest=out, encoding="utf-8")
+        status = pisa.CreatePDF(html, dest=out)
         if status.err:
             raise RuntimeError(f"PDF generation failed: {status.err}")
         return out.getvalue()
