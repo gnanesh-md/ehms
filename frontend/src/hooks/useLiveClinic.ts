@@ -3,6 +3,7 @@ import { db } from "../services/db"
 import { DoctorPortalDatabase } from "../services/doctorPortalDb"
 import { LabOrderDatabase } from "../services/labOrdersDb"
 import { BillingDatabase } from "../services/billingDb"
+import { RadiologyWorkflowDb } from "../services/radiologyWorkflowDb"
 
 /**
  * Keeps a screen in step with the rest of the hospital while it is open.
@@ -32,6 +33,7 @@ const WATCHED_KEY_PREFIXES = [
   "hospai_er_", // ER visits and trauma registrations
   "hospai_inpatient_", // Inpatient ward bed occupancy and admissions
   "hospai_discharged_", // Inpatient discharges
+  "hosp_rad_studies", // radiology studies and their reports
 ]
 
 export interface LiveClinic {
@@ -61,9 +63,27 @@ export function useLiveClinic(tickMs = 1000): LiveClinic {
         !WATCHED_KEY_PREFIXES.some((prefix) => event.key!.startsWith(prefix))
       )
         return
+      if (!event.key || event.key.startsWith("hosp_rad_")) RadiologyWorkflowDb.invalidateCache()
       bump()
     }
     window.addEventListener("storage", onStorage)
+
+    // Radiology reports. Deliberately not RadiologyWorkflowDb.subscribe(): that
+    // also fires on every storage event and billing update, which would bump the
+    // whole portal far more often than anything radiology-related changes.
+    // These two signals fire only when a study or report is actually written.
+    const onRadiology = () => {
+      RadiologyWorkflowDb.invalidateCache()
+      bump()
+    }
+    window.addEventListener("hospai_rad_workflow_updated", onRadiology)
+    let radChannel: BroadcastChannel | null = null
+    try {
+      radChannel = new BroadcastChannel("hospai_rad_channel")
+      radChannel.onmessage = onRadiology
+    } catch {
+      // BroadcastChannel unavailable: the storage listener still covers other tabs.
+    }
 
     // Cross-machine backend polling for OP Queue and Claims
     db.syncOPVisitsWithBackend()
@@ -76,6 +96,10 @@ export function useLiveClinic(tickMs = 1000): LiveClinic {
     return () => {
       unsubscribers.forEach((unsubscribe) => unsubscribe())
       window.removeEventListener("storage", onStorage)
+      window.removeEventListener("hospai_rad_workflow_updated", onRadiology)
+      try {
+        radChannel?.close()
+      } catch {}
       window.clearInterval(backendPollTimer)
     }
   }, [])

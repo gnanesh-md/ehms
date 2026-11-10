@@ -23,7 +23,7 @@ import {
   DispatchResult,
   DispatchTargets,
 } from "../../services/consultationDispatch"
-import { LabOrderDatabase, priceForTest } from "../../services/labOrdersDb"
+import { priceForTest } from "../../services/labOrdersDb"
 import { calculateMedicineQuantity } from "../../utils/prescriptionQuantity"
 import {
   checkPrescriptionAiStatus,
@@ -67,6 +67,7 @@ import { TONE, gradient } from "./doctorTheme"
 
 import PrescriptionWhiteboard from "./PrescriptionWhiteboard"
 import LiveBoard from "./LiveBoard"
+import PatientReportsPanel, { countReadyReports } from "./PatientReportsPanel"
 
 /**
  * Four steps, in the order a consultation actually happens.
@@ -303,6 +304,11 @@ export default function DoctorPortal({
     const open = new Set(notifications.map((n) => n.encounterId))
     return DoctorPortalDatabase.getNotifications(doctor.id, true).filter((n) => !open.has(n.encounterId))
   }, [doctor.id, notifications, revision])
+  // Released lab/radiology reports per finished patient, for the inbox badge.
+  const readyReports = useMemo(
+    () => countReadyReports(finished.map((n) => n.umr)),
+    [finished, revision],
+  )
   const unreadCount = useMemo(
     () =>
       DoctorPortalDatabase.getNotifications(doctor.id).filter((n) => !n.read)
@@ -367,10 +373,6 @@ export default function DoctorPortal({
     [selected, revision],
   )
 
-  const patientLabOrders = useMemo(
-    () => (selected ? LabOrderDatabase.getOrdersForPatient(selected.umr) : []),
-    [selected, revision],
-  )
 
   // The clinical note is derived from the turns on every change, never stored as
   // a separate editable copy -- so it cannot drift away from the conversation it
@@ -863,6 +865,7 @@ export default function DoctorPortal({
           notifications={notifications}
           unassigned={unassigned}
           finished={finished}
+          readyReports={readyReports}
           onClaim={claimPatient}
           selectedEncounterId={view === "patient" ? selectedEncounterId : null}
           tab={inboxTab}
@@ -987,7 +990,7 @@ export default function DoctorPortal({
                   <PatientContextPanel
                     notification={selected}
                     context={context}
-                    labOrders={patientLabOrders}
+                    revision={revision}
                     onProceed={startConsultation}
                   />
                 )}
@@ -1324,6 +1327,7 @@ function PatientInbox({
   notifications,
   unassigned,
   finished,
+  readyReports,
   onClaim,
   selectedEncounterId,
   tab,
@@ -1337,6 +1341,7 @@ function PatientInbox({
   notifications: DoctorNotification[]
   unassigned: DoctorNotification[]
   finished: DoctorNotification[]
+  readyReports: Map<string, number>
   onClaim: (notification: DoctorNotification) => void
   selectedEncounterId: string | null
   tab: InboxTab
@@ -1437,6 +1442,8 @@ function PatientInbox({
           shown.map((notification) => {
             const active = notification.encounterId === selectedEncounterId
             const state = tab === "finished" ? null : queueState(notification.status)
+            const reportCount =
+              tab === "finished" ? readyReports.get(notification.umr.trim().toUpperCase()) || 0 : 0
             const waitingMinutes = Math.max(0, Math.floor((now - (Date.parse(notification.arrivedAt) || now)) / 60000))
             const inRoom = notification.status === "Under Consultation"
             const isOverdue = tab === "queue" && waitingMinutes >= LONG_WAIT_MINUTES
@@ -1497,6 +1504,15 @@ function PatientInbox({
                       {tab === "finished" && (
                         <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#DCFCE7] text-[#15803D] border border-[#BBF7D0]">
                           {notification.status}
+                        </span>
+                      )}
+
+                      {reportCount > 0 && (
+                        <span
+                          className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#EEF2FF] text-[#4338CA] border border-[#C7D2FE]"
+                          title="Lab or radiology reports are ready to view"
+                        >
+                          {reportCount} report{reportCount === 1 ? "" : "s"} ready
                         </span>
                       )}
 
@@ -1685,13 +1701,13 @@ function PatientBanner({
 function PatientContextPanel({
   notification,
   context,
-  labOrders,
+  revision,
   onProceed,
   hideProceedButton = false,
 }: {
   notification: DoctorNotification
   context: NonNullable<ReturnType<typeof DoctorPortalDatabase.getPatientContext>>
-  labOrders: ReturnType<typeof LabOrderDatabase.getOrdersForPatient>
+  revision: number
   onProceed: () => void
   hideProceedButton?: boolean
 }) {
@@ -1847,6 +1863,10 @@ function PatientContextPanel({
         </div>
       </section>
 
+      {/* Lab and radiology reports sit right after the vitals: for a visit the
+          doctor has already finished, they are the reason to reopen it. */}
+      <PatientReportsPanel umr={notification.umr} revision={revision} />
+
       {isNewPatient ? (
         <div className="bg-[#F0FDF4] border border-[#BBF7D0] rounded p-4">
           <h3 className="text-[13px] font-bold text-[#15803D]">
@@ -1925,62 +1945,6 @@ function PatientContextPanel({
             </section>
           )}
         </>
-      )}
-
-      {labOrders.length > 0 && (
-        <section className="bg-white border border-[#DDE2EC] rounded">
-          <div className="px-4 py-2.5 border-b border-[#DDE2EC]">
-            <h3 className="text-[13px] font-bold text-gray-900">
-              Laboratory orders &amp; results
-            </h3>
-          </div>
-          <div className="divide-y divide-[#F1F5F9]">
-            {labOrders.map((order) => (
-              <div key={order.id} className="px-4 py-3">
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <div className="text-[12px] font-semibold text-gray-900 font-mono">
-                    {order.id}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <StatusBadge status={order.status} />
-                    <span
-                      className={`text-[10.5px] font-bold px-1.5 py-0.5 rounded ${
-                        order.billing.status === "Paid"
-                          ? "bg-[#DCFCE7] text-[#15803D]"
-                          : "bg-[#FEF3C7] text-[#92400E]"
-                      }`}
-                    >
-                      {order.billing.status === "Paid"
-                        ? "Billed"
-                        : "Awaiting payment"}
-                    </span>
-                  </div>
-                </div>
-                <div className="mt-1.5 space-y-1">
-                  {order.tests.map((test) => (
-                    <div
-                      key={test.id}
-                      className="flex items-center justify-between text-[11.5px]"
-                    >
-                      <span className="text-[#475569]">{test.name}</span>
-                      <span
-                        className={`font-mono ${
-                          test.flag === "Critical"
-                            ? "text-[#B91C1C] font-bold"
-                            : "text-gray-800"
-                        }`}
-                      >
-                        {test.result
-                          ? `${test.result} ${test.resultUnit || ""}`
-                          : test.status}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
       )}
 
       {!hideProceedButton && (
