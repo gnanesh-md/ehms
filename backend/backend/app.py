@@ -363,9 +363,21 @@ def add_cors_headers(response):
     return response
 
 
-@app.route("/api/<path:_path>", methods=["OPTIONS"])
-def preflight(_path):
-    return ("", 204)
+@app.before_request
+def handle_options_preflight():
+    if request.method == "OPTIONS":
+        res = make_response("", 204)
+        origin = request.headers.get("Origin")
+        if is_allowed_origin(origin):
+            res.headers["Access-Control-Allow-Origin"] = origin
+            res.headers["Access-Control-Allow-Credentials"] = "true"
+            res.headers["Access-Control-Allow-Headers"] = (
+                "Content-Type, Authorization, X-Requested-With, X-Hospital-Code, X-CSRF-Token, X-Platform-Admin-Username, X-Platform-Admin-Password, X-Correlation-ID"
+            )
+            res.headers["Access-Control-Allow-Methods"] = (
+                "GET, POST, PUT, DELETE, PATCH, OPTIONS"
+            )
+        return res
 
 
 import sys

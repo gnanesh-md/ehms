@@ -293,7 +293,7 @@ function hmsApiMockMiddleware() {
       // /api/auth/login here while the gateway was up meant no session cookie
       // was ever issued, so every authenticated call (prescription reading,
       // OCR) failed with 401 -- the real backend handles it whenever it can.
-      const realPort = pathname.startsWith("/api/hr/") || pathname === "/api/hr" || pathname.startsWith("/iclock") ? 8011 : 8010
+      const realPort = pathname.startsWith("/api/hr/") || pathname === "/api/hr" || pathname.startsWith("/api/v1/") || pathname.startsWith("/iclock") ? 8011 : 8010
       if (await portUp(realPort)) return next()
 
       // SSE EventSource streams must return text/event-stream to avoid browser aborts
@@ -505,6 +505,18 @@ const proxy = {
   // HR is served by the Node HRMS server (server/app.mjs), not the gateway's
   // Flask hr-service, which has none of the credentials/payroll/KPI routes
   // hrmsDb.ts calls. Must precede "/hms-api": the first matching prefix wins.
+  "/hms-api/api/v1": {
+    target: "http://localhost:8011",
+    changeOrigin: true,
+    rewrite: (path: string) => path.replace(/^\/hms-api/, ""),
+    configure: (proxy: any) => {
+      proxy.on("error", (err: any, req: any, res: any) => {
+        if (res.headersSent) return;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, items: [], data: [], employees: [] }));
+      });
+    },
+  },
   "/hms-api/api/hr": {
     target: "http://localhost:8011",
     changeOrigin: true,

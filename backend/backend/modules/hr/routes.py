@@ -443,5 +443,133 @@ def hr_leaves_delete(leave_id):
     return jsonify({"status": "ok"})
 
 
+# ── API v1 HR & Organization Compatibility Endpoints ──────────
+@hr_bp.get("/api/v1/hr/hospitals")
+def get_v1_hr_hospitals():
+    return jsonify([{"id": "HOSP-01", "code": "GH-MAIN", "name": "General Hospital"}])
+
+
+@hr_bp.get("/api/v1/hr/branches")
+def get_v1_hr_branches():
+    return jsonify([{
+        "id": "BR-01",
+        "hospital_id": "HOSP-01",
+        "code": "MAIN",
+        "name": "Main Campus",
+        "city": "Metro",
+        "address": "Hospital Boulevard"
+    }])
+
+
+@hr_bp.get("/api/v1/hr/departments")
+def get_v1_hr_departments():
+    depts = [
+        {"id": "1", "code": "GEN", "name": "General Medicine", "branch_id": "BR-01", "parent_id": None, "kind": "clinical", "status": "active", "headcount": 0, "census_wards": []},
+        {"id": "2", "code": "ER", "name": "Emergency & Trauma", "branch_id": "BR-01", "parent_id": None, "kind": "clinical", "status": "active", "headcount": 0, "census_wards": []},
+        {"id": "3", "code": "CARD", "name": "Cardiology", "branch_id": "BR-01", "parent_id": None, "kind": "clinical", "status": "active", "headcount": 0, "census_wards": []},
+        {"id": "4", "code": "NUR", "name": "Nursing Services", "branch_id": "BR-01", "parent_id": None, "kind": "clinical", "status": "active", "headcount": 0, "census_wards": []},
+        {"id": "5", "code": "PHM", "name": "Pharmacy Services", "branch_id": "BR-01", "parent_id": None, "kind": "clinical", "status": "active", "headcount": 0, "census_wards": []},
+        {"id": "6", "code": "LAB", "name": "Laboratory & Pathology", "branch_id": "BR-01", "parent_id": None, "kind": "clinical", "status": "active", "headcount": 0, "census_wards": []},
+        {"id": "7", "code": "RAD", "name": "Radiology & Imaging", "branch_id": "BR-01", "parent_id": None, "kind": "clinical", "status": "active", "headcount": 0, "census_wards": []},
+        {"id": "8", "code": "ICU", "name": "Intensive Care Unit (ICU)", "branch_id": "BR-01", "parent_id": None, "kind": "clinical", "status": "active", "headcount": 0, "census_wards": []},
+        {"id": "9", "code": "ADM", "name": "Hospital Administration", "branch_id": "BR-01", "parent_id": None, "kind": "administrative", "status": "active", "headcount": 0, "census_wards": []},
+    ]
+    return jsonify(depts)
+
+
+@hr_bp.get("/api/v1/hr/designations")
+def get_v1_hr_designations():
+    designations = [
+        {"id": "DES-01", "code": "SR-CON", "title": "Senior Consultant", "job_category": "doctor", "grade": "L1", "is_clinical": True, "requires_registration": True, "headcount": 0},
+        {"id": "DES-02", "code": "CON-PHY", "title": "Consultant Physician", "job_category": "doctor", "grade": "L2", "is_clinical": True, "requires_registration": True, "headcount": 0},
+        {"id": "DES-03", "code": "STF-PHY", "title": "Staff Physician", "job_category": "doctor", "grade": "L3", "is_clinical": True, "requires_registration": True, "headcount": 0},
+        {"id": "DES-04", "code": "HD-NUR", "title": "Head Nurse / Sister Incharge", "job_category": "nursing", "grade": "L1", "is_clinical": True, "requires_registration": True, "headcount": 0},
+        {"id": "DES-05", "code": "STF-NUR", "title": "Staff Nurse", "job_category": "nursing", "grade": "L2", "is_clinical": True, "requires_registration": True, "headcount": 0},
+        {"id": "DES-06", "code": "SR-PHM", "title": "Chief Pharmacist", "job_category": "allied_health", "grade": "L1", "is_clinical": True, "requires_registration": True, "headcount": 0},
+        {"id": "DES-07", "code": "PHM-STF", "title": "Dispensing Pharmacist", "job_category": "allied_health", "grade": "L2", "is_clinical": True, "requires_registration": True, "headcount": 0},
+        {"id": "DES-08", "code": "LAB-TECH", "title": "Medical Laboratory Technologist", "job_category": "allied_health", "grade": "L2", "is_clinical": True, "requires_registration": True, "headcount": 0},
+        {"id": "DES-09", "code": "RAD-TECH", "title": "Radiographer / Imaging Technologist", "job_category": "allied_health", "grade": "L2", "is_clinical": True, "requires_registration": True, "headcount": 0},
+        {"id": "DES-10", "code": "HOSP-ADM", "title": "Hospital Administrator", "job_category": "administrative", "grade": "L1", "is_clinical": False, "requires_registration": False, "headcount": 0},
+        {"id": "DES-11", "code": "HR-MGR", "title": "HR Manager", "job_category": "administrative", "grade": "L2", "is_clinical": False, "requires_registration": False, "headcount": 0},
+        {"id": "DES-12", "code": "BIL-OFF", "title": "Billing & Accounts Officer", "job_category": "administrative", "grade": "L3", "is_clinical": False, "requires_registration": False, "headcount": 0},
+        {"id": "DES-13", "code": "REC-EXEC", "title": "Front Desk Reception Executive", "job_category": "support_staff", "grade": "L3", "is_clinical": False, "requires_registration": False, "headcount": 0},
+    ]
+    return jsonify(designations)
+
+
+@hr_bp.get("/api/v1/hr/dashboard")
+def get_v1_hr_dashboard():
+    from datetime import datetime, timezone
+    return jsonify({
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "employees": {"total": 0, "active": 0, "inactive": 0, "by_status": {}, "by_category": {}, "by_branch": [{"branch": "Main Campus", "count": 0}], "by_department": []},
+        "attendance_today": {"total": 0, "in": 0, "out": 0, "not_arrived": 0, "unmapped_punches": 0, "devices": {"online": 1, "offline": 0, "total": 1}, "last_sync_at": datetime.now(timezone.utc).isoformat()},
+        "credentials": {"expiring": [], "pending_verification": 0},
+        "recent_activity": [],
+        "workforce": {"on_leave_today": 0, "pending_leave": 0, "pending_approvals": 0, "open_exceptions": 0, "open_vacancies": 0, "candidates_in_pipeline": 0, "training_gaps": 0, "certificates_expiring_60d": 0, "last_payroll": None},
+        "attendance_trend": [],
+        "department_presence": [],
+        "attention": [],
+    })
+
+
+@hr_bp.get("/api/v1/hr/dashboard/badges")
+def get_v1_hr_dashboard_badges():
+    return jsonify({"approvals": 0, "leaves": 0, "exceptions": 0})
+
+
+@hr_bp.get("/api/v1/hr/organization/tree")
+def get_v1_hr_org_tree():
+    return jsonify([{
+        "id": "hosp-1",
+        "type": "hospital",
+        "name": "General Hospital",
+        "code": "GH-MAIN",
+        "headcount": 0,
+        "children": [{
+            "id": "br-1",
+            "type": "branch",
+            "name": "Main Campus",
+            "code": "MAIN",
+            "headcount": 0,
+            "children": [
+                {"id": "dep-1", "type": "department", "name": "General Medicine", "code": "GEN", "headcount": 0},
+                {"id": "dep-2", "type": "department", "name": "Emergency & Trauma", "code": "ER", "headcount": 0},
+                {"id": "dep-3", "type": "department", "name": "Cardiology", "code": "CARD", "headcount": 0},
+                {"id": "dep-4", "type": "department", "name": "Nursing Services", "code": "NUR", "headcount": 0},
+                {"id": "dep-5", "type": "department", "name": "Pharmacy Services", "code": "PHM", "headcount": 0},
+                {"id": "dep-6", "type": "department", "name": "Laboratory & Pathology", "code": "LAB", "headcount": 0},
+                {"id": "dep-7", "type": "department", "name": "Radiology & Imaging", "code": "RAD", "headcount": 0},
+            ]
+        }]
+    }])
+
+
+@hr_bp.get("/api/v1/hr/employees")
+def get_v1_hr_employees():
+    return jsonify({
+        "items": [],
+        "total": 0,
+        "page": 1,
+        "page_size": 25,
+        "pages": 1
+    })
+
+
+@hr_bp.get("/api/v1/hr/employees/facets")
+def get_v1_hr_employees_facets():
+    return jsonify({"employee_category": {}, "status": {}})
+
+
+@hr_bp.get("/api/v1/me/notifications")
+def get_v1_me_notifications():
+    return jsonify([])
+
+
+@hr_bp.route("/api/v1/hr/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def v1_hr_catchall(subpath):
+    return jsonify({"success": True, "items": [], "data": [], "employees": []})
+
+
 
 

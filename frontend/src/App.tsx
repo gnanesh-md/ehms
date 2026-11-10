@@ -2448,30 +2448,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* Messages */}
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setMessagesOpen((m) => !m)}
-                  className="relative w-8 h-8 flex items-center justify-center text-[#94A3B8] hover:text-white rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
-                  title="Staff Messages & Clinical Handovers"
-                >
-                  <Icon.Message />
-                  {messagesUnreadCount > 0 && (
-                    <span className="absolute top-0.5 right-0.5 w-3 h-3 bg-[#16A34A] rounded-full text-[8px] text-white font-bold flex items-center justify-center">
-                      {messagesUnreadCount}
-                    </span>
-                  )}
-                </button>
-                {messagesOpen && (
-                  <MessagesPanel
-                    onClose={() => setMessagesOpen(false)}
-                    onNavigate={(m, s) => navigate(m, s)}
-                    onUnreadChange={(count) => setMessagesUnreadCount(count)}
-                  />
-                )}
-              </div>
-
               {/* Fullscreen */}
               <button
                 onClick={toggleFullscreen}
