@@ -1125,6 +1125,176 @@ function getRoleProfile(roleId: string, username?: string): StaffProfile {
   }
 }
 
+function isModuleAccessible(
+  targetModule: string,
+  role: string,
+  permissions: string[] = [],
+  staff?: StaffProfile,
+): boolean {
+  const roleUpper = (role || "").toUpperCase()
+  const isSuperAdmin =
+    roleUpper === "ROLE_ADMIN" ||
+    roleUpper === "ROLE_SUPERADMIN" ||
+    roleUpper === "ADMIN" ||
+    staff?.id === "ADM-001" ||
+    staff?.role === "ROLE_ADMIN" ||
+    permissions.includes("*") ||
+    permissions.includes("admin")
+  if (isSuperAdmin) return true
+
+  // Universal modules
+  if (targetModule === "dashboard" || targetModule === "my_hr") return true
+
+  // Direct match or prefix
+  if (permissions.includes(targetModule)) return true
+  if (permissions.some((p) => p.startsWith(targetModule + ":") || p.startsWith(targetModule + "."))) return true
+
+  // Doctor portal and clinical records
+  if (
+    (targetModule === "doctor_portal" || targetModule === "doctor_workflow" || targetModule === "doctors_overview" || targetModule === "doctor_scheduling") &&
+    (permissions.includes("clinical") || permissions.includes("patients") || permissions.includes("doctor_portal") || roleUpper.includes("DOCTOR") || roleUpper.includes("PHYSICIAN"))
+  ) return true
+
+  // Nursing
+  if (
+    targetModule === "nursing" &&
+    (permissions.includes("nursing") || permissions.includes("clinical") || permissions.includes("beds") || roleUpper.includes("NURSE"))
+  ) return true
+
+  // Reception and patient care
+  if (
+    (targetModule === "patients" || targetModule === "register" || targetModule === "op_registration" || targetModule === "appointments" || targetModule === "patient_messages" || targetModule === "patient_experience" || targetModule === "patient_exp") &&
+    (permissions.includes("patients") || permissions.includes("reception") || roleUpper.includes("RECEPT") || roleUpper.includes("FRONT_DESK"))
+  ) return true
+
+  // OP Department
+  if (
+    (targetModule === "outpatient" || targetModule === "op_management" || targetModule === "queue" || targetModule === "op_nurse" || targetModule === "opd_procedures" || targetModule === "journey_scan" || targetModule === "op_workflow") &&
+    (permissions.includes("outpatient") || permissions.includes("op") || permissions.includes("clinical") || roleUpper.includes("DOCTOR") || roleUpper.includes("NURSE"))
+  ) return true
+
+  // Clinical & Charting
+  if (
+    (targetModule === "clinical" || targetModule === "chart") &&
+    (permissions.includes("clinical") || permissions.includes("patients") || roleUpper.includes("DOCTOR") || roleUpper.includes("NURSE"))
+  ) return true
+
+  // Emergency
+  if (
+    (targetModule === "emergency" || targetModule === "emergency_ui" || targetModule === "triage") &&
+    (permissions.includes("emergency") || permissions.includes("er") || roleUpper.includes("ER"))
+  ) return true
+
+  // Inpatient & Beds
+  if (
+    (targetModule === "inpatient" || targetModule === "beds" || targetModule === "admissions" || targetModule === "readmission" || targetModule === "discharge") &&
+    (permissions.includes("inpatient") || permissions.includes("beds") || roleUpper.includes("NURSE") || roleUpper.includes("DOCTOR"))
+  ) return true
+
+  // Critical Care ICU
+  if (targetModule === "icu" || targetModule.startsWith("icu_")) {
+    if (permissions.includes("icu") || roleUpper.includes("DOCTOR") || roleUpper.includes("NURSE")) return true
+  }
+
+  // Laboratory Diagnostics
+  if (targetModule === "laboratory" || targetModule.startsWith("lab_")) {
+    if (permissions.includes("laboratory") || permissions.includes("lab") || roleUpper.includes("LAB")) return true
+  }
+
+  // Radiology & Imaging
+  if (targetModule === "radiology" || targetModule.startsWith("radiology_")) {
+    if (permissions.includes("radiology") || roleUpper.includes("RADIOL")) return true
+  }
+
+  // Pharmacy
+  if (targetModule === "pharmacy" || targetModule.startsWith("pharmacy_")) {
+    if (
+      permissions.includes("pharmacy") ||
+      permissions.includes("ROLE_PHARMACIST") ||
+      permissions.includes("ROLE_PHARMACY") ||
+      roleUpper.includes("PHARMAC")
+    ) return true
+  }
+
+  // Surgery
+  if (targetModule === "surgery" && (permissions.includes("surgery") || roleUpper.includes("SURGEON"))) return true
+
+  // Billing
+  if (
+    (targetModule === "billing" || targetModule.startsWith("billing_") || targetModule === "payments" || targetModule === "lab_billing") &&
+    (permissions.includes("billing") || permissions.includes("laboratory") || roleUpper.includes("BILLING"))
+  ) return true
+
+  // Insurance
+  if (
+    (targetModule === "insurance" || targetModule.startsWith("insurance_")) &&
+    (permissions.includes("insurance") || roleUpper.includes("INSURANCE"))
+  ) return true
+
+  // Accounts & Finance
+  if (
+    (targetModule === "accounts" || targetModule.startsWith("accounts_")) &&
+    (permissions.includes("accounts") || permissions.includes("finance") || roleUpper.includes("ACCOUNT") || roleUpper.includes("FINANCE"))
+  ) return true
+
+  // HRMS
+  if (
+    (targetModule === "hrms" || targetModule === "employees" || targetModule === "scheduling" || targetModule.startsWith("hr_")) &&
+    (permissions.includes("hrms") || permissions.some((p) => p.startsWith("hrms:") || p.startsWith("hr_")) || roleUpper.includes("HR"))
+  ) return true
+
+  // Hosp AI Intelligence
+  if (
+    (targetModule === "intelligence" || targetModule === "dpi_ocr" || targetModule === "smart_ocr" || targetModule === "symptom_ai" || targetModule === "clinical_rag" || targetModule === "clinical_summaries" || targetModule === "bulk_ai" || targetModule === "nl_filtering") &&
+    (permissions.includes("intelligence") || permissions.includes("clinical"))
+  ) return true
+
+  // Reports
+  if (
+    (targetModule === "reports" || targetModule.startsWith("reports_") || targetModule === "revenue_reports") &&
+    (permissions.includes("reports") || permissions.some((p) => p.startsWith("reports:")))
+  ) return true
+
+  // Administration
+  if (targetModule === "admin") return isSuperAdmin
+
+  // Check parent nav item as a catch-all
+  const parentNav = NAV.find(
+    (n) => n.key === targetModule || n.children?.some((c) => c.key === targetModule)
+  )
+  if (parentNav && parentNav.key !== "hrms" && parentNav.key !== "admin") {
+    if (
+      permissions.includes(parentNav.key) ||
+      permissions.some((p) => p.startsWith(parentNav.key + ":") || p.startsWith(parentNav.key + "."))
+    ) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function getFirstAllowedModule(
+  role: string,
+  permissions: string[] = [],
+  staff?: StaffProfile,
+): Module {
+  for (const item of NAV) {
+    if (item.key === "admin" && role !== "ROLE_ADMIN" && !permissions.includes("admin")) continue
+    if (isModuleAccessible(item.key, role, permissions, staff)) {
+      return item.key
+    }
+    if (item.children) {
+      for (const child of item.children) {
+        if (isModuleAccessible(child.key, role, permissions, staff)) {
+          return child.key
+        }
+      }
+    }
+  }
+  return "dashboard"
+}
+
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(false)
 
@@ -1402,42 +1572,18 @@ export default function App() {
     if (!loggedIn) return
     if (isSuperAdminUser) return
 
-    const hasDirectAccess =
-      userPermissions.includes(module) ||
-      userPermissions.some((p) => p.startsWith(module + ":") || p.startsWith(module + "."))
+    // If all departments are visible in the sidebar, restricted modules are handled
+    // in-place by DepartmentAccessDenied rather than bouncing the user back.
+    if (showAllDepartments) return
 
-    if (hasDirectAccess) return
-
-    // Check if it matches laboratory, radiology or pharmacy sub-modules
-    if (module.startsWith("lab_") && (userPermissions.includes("laboratory") || userPermissions.some((p) => p.startsWith("laboratory:")))) {
-      return
+    // If restricted departments are hidden, redirect unauthorized routes to first allowed module
+    if (!isModuleAccessible(module, userRole, userPermissions, activeStaff)) {
+      const fallback = getFirstAllowedModule(userRole, userPermissions, activeStaff)
+      if (fallback !== module) {
+        setModule(fallback)
+      }
     }
-    if (module.startsWith("radiology_") && (userPermissions.includes("radiology") || userPermissions.some((p) => p.startsWith("radiology:")))) {
-      return
-    }
-    if (module.startsWith("pharmacy_") && (userPermissions.includes("pharmacy") || userPermissions.some((p) => p.startsWith("pharmacy:")))) {
-      return
-    }
-
-    // Check if it matches a child module of an allowed parent
-    const parentMatch = NAV.find((n) =>
-      n.children?.some((c) => c.key === module),
-    )
-
-    if (parentMatch && (userPermissions.includes(parentMatch.key) || userPermissions.some((p) => p.startsWith(parentMatch.key + ":")))) {
-      return
-    }
-
-    // Unauthorized route: redirect to first allowed module
-    const fallback =
-      userPermissions.find((p) => p !== "intelligence" && p !== "analytics" && p !== "dashboard") ||
-      (userPermissions.includes("dashboard") ? "dashboard" : userPermissions[0]) ||
-      "dashboard"
-
-    if (fallback && fallback !== module) {
-      setModule(fallback as Module)
-    }
-  }, [module, loggedIn, userPermissions, userRole])
+  }, [module, loggedIn, userPermissions, userRole, showAllDepartments, activeStaff])
 
   const handleLogout = async () => {
     try {
@@ -1558,11 +1704,8 @@ export default function App() {
     }
 
     // If the default module is not in the granted permissions, fallback to the first allowed module
-    if (!isSuperAdminAccount && !userData.permissions.includes(defaultModule) && userData.permissions.length > 0) {
-      const firstAllowed = userData.permissions.find((p) => p !== "intelligence" && p !== "analytics") || userData.permissions[0]
-      if (firstAllowed) {
-        defaultModule = firstAllowed as Module
-      }
+    if (!isSuperAdminAccount && !isModuleAccessible(defaultModule, userData.role, userData.permissions, activeStaff)) {
+      defaultModule = getFirstAllowedModule(userData.role, userData.permissions, activeStaff)
     }
 
     setLoggedIn(true)
@@ -1678,8 +1821,18 @@ export default function App() {
         setModule(insuranceModule(d.module) as Module)
       }
     }
+    const onNavigateGlobal = (e: Event) => {
+      const d = (e as CustomEvent<{ module: string }>).detail
+      if (d && d.module) {
+        setModule(d.module as Module)
+      }
+    }
+    window.addEventListener("hms:navigate", onNavigateGlobal)
     window.addEventListener("hms:open-insurance", onOpen)
-    return () => window.removeEventListener("hms:open-insurance", onOpen)
+    return () => {
+      window.removeEventListener("hms:navigate", onNavigateGlobal)
+      window.removeEventListener("hms:open-insurance", onOpen)
+    }
   }, [])
 
   const navigate = (m: string, sub?: string) => {
@@ -2368,13 +2521,8 @@ export default function App() {
                     userPermissions.includes("admin")
                   const hasAccess =
                     isSuperAdmin ||
-                    userPermissions.includes(item.key) ||
-                    userPermissions.some((p) => p.startsWith(item.key + ":") || p.startsWith(item.key + ".")) ||
-                    item.children?.some(
-                      (c) =>
-                        userPermissions.includes(c.key) ||
-                        userPermissions.some((p) => p.startsWith(c.key + ":") || p.startsWith(c.key + "."))
-                    )
+                    isModuleAccessible(item.key, userRole, userPermissions, activeStaff) ||
+                    item.children?.some((c) => isModuleAccessible(c.key, userRole, userPermissions, activeStaff))
 
                   // Strictly restrict Doctor Workspace: ONLY doctors, authorized oversight managers, and super admin can view and access that!
                   if (item.key === "doctor_portal" && !isSuperAdminUser && !isDoctorUser && !userPermissions.includes("doctors_overview")) {
@@ -2471,21 +2619,24 @@ export default function App() {
                           }
                           if (filteredChildren && filteredChildren.length > 0) {
                             if (railCollapsed) {
+                              setInsuranceCaseId(undefined)
                               if (item.key === "intelligence") {
                                 setModule("intelligence")
                               } else {
                                 setModule(filteredChildren[0].key)
                               }
                             } else {
-                              toggleExpand(item.key)
-
-                              if (!expanded.includes(item.key)) {
+                              if (isActive) {
+                                toggleExpand(item.key)
+                              } else {
                                 setInsuranceCaseId(undefined)
+                                setExpanded((prev) => (prev.includes(item.key) ? prev : [...prev, item.key]))
                                 if (item.key === "intelligence") {
                                   setModule("intelligence")
                                 } else {
                                   setModule(filteredChildren[0].key)
                                 }
+                                closeMobileNav()
                               }
                             }
                           } else {
@@ -2842,138 +2993,7 @@ export default function App() {
                   userPermissions.includes("*") ||
                   userPermissions.includes("admin")
 
-                const currentModuleHasAccess = (() => {
-                  if (isSuperAdminUser) return true
-                  if (module === "my_hr") return true
-
-                  // Direct match or wildcard
-                  if (userPermissions.includes(module) || userPermissions.includes("*")) return true
-                  if (userPermissions.some((p) => p.startsWith(module + ":") || p.startsWith(module + "."))) return true
-
-                  // Doctor portal and clinical consultation workspace:
-                  // Strictly restricted: ONLY doctors and super admin can view and access that!
-                  if (module === "doctor_portal" || module === "doctor_workflow") {
-                    return isDoctorUser || isSuperAdminUser
-                  }
-                  if (module === "doctors_overview" || module === "doctor_scheduling") {
-                    return isSuperAdminUser
-                  }
-
-                  // Reception and patient care
-                  if (
-                    (module === "patients" || module === "register" || module === "op_registration" || module === "appointments" || module === "patient_messages" || module === "patient_experience") &&
-                    (userPermissions.includes("patients") || userPermissions.includes("reception"))
-                  ) return true
-
-                  // OP Department
-                  if (
-                    (module === "outpatient" || module === "op_management" || module === "queue" || module === "op_nurse" || module === "opd_procedures" || module === "journey_scan" || module === "op_workflow") &&
-                    (userPermissions.includes("outpatient") || userPermissions.includes("op") || userPermissions.includes("clinical"))
-                  ) return true
-
-                  // Clinical & Charting
-                  if (
-                    (module === "clinical" || module === "chart") &&
-                    (userPermissions.includes("clinical") || userPermissions.includes("patients"))
-                  ) return true
-
-                  // Emergency
-                  if (
-                    (module === "emergency" || module === "emergency_ui" || module === "triage") &&
-                    userPermissions.includes("emergency")
-                  ) return true
-
-                  // Inpatient & Beds
-                  if (
-                    (module === "inpatient" || module === "beds" || module === "admissions" || module === "readmission" || module === "discharge") &&
-                    userPermissions.includes("inpatient")
-                  ) return true
-
-                  // Critical Care ICU
-                  if (module === "icu" || module.startsWith("icu_")) {
-                    if (userPermissions.includes("icu")) return true
-                  }
-
-                  // Laboratory Diagnostics
-                  if (module === "laboratory" || module.startsWith("lab_")) {
-                    if (userPermissions.includes("laboratory")) return true
-                  }
-
-                  // Radiology & Imaging
-                  if (module === "radiology" || module.startsWith("radiology_")) {
-                    if (userPermissions.includes("radiology")) return true
-                  }
-
-                  // Pharmacy
-                  if (module === "pharmacy" || module.startsWith("pharmacy_")) {
-                    if (
-                      userPermissions.includes("pharmacy") ||
-                      userPermissions.includes("ROLE_PHARMACIST") ||
-                      userPermissions.includes("ROLE_PHARMACY") ||
-                      userPermissions.includes(module)
-                    ) return true
-                  }
-
-                  // Surgery
-                  if (module === "surgery" && userPermissions.includes("surgery")) return true
-
-                  // Billing
-                  if (
-                    (module === "billing" || module.startsWith("billing_") || module === "payments" || module === "lab_billing") &&
-                    userPermissions.includes("billing")
-                  ) return true
-                  if (module === "lab_billing" && userPermissions.includes("laboratory")) return true
-
-                  // Insurance
-                  if (
-                    (module === "insurance" || module.startsWith("insurance_")) &&
-                    userPermissions.includes("insurance")
-                  ) return true
-
-                  // Accounts & Finance
-                  if (
-                    (module === "accounts" || module.startsWith("accounts_")) &&
-                    userPermissions.includes("accounts")
-                  ) return true
-
-                  // HRMS
-                  if (
-                    (module === "hrms" || module === "employees" || module === "scheduling" || module.startsWith("hr_")) &&
-                    (userPermissions.includes("hrms") || userPermissions.some((p) => p.startsWith("hrms:") || p.startsWith("hr_")))
-                  ) return true
-
-                  // Hosp AI Intelligence
-                  if (
-                    (module === "intelligence" || module === "dpi_ocr" || module === "smart_ocr" || module === "symptom_ai" || module === "clinical_rag" || module === "clinical_summaries" || module === "bulk_ai" || module === "nl_filtering") &&
-                    (userPermissions.includes("intelligence") || userPermissions.includes("clinical"))
-                  ) return true
-
-                  // Reports
-                  if (
-                    (module === "reports" || module.startsWith("reports_") || module === "revenue_reports") &&
-                    (userPermissions.includes("reports") || userPermissions.some((p) => p.startsWith("reports:")))
-                  ) return true
-
-                  // Administration
-                  if (module === "admin" || module === "admin_doctors") {
-                    return isSuperAdminUser
-                  }
-
-                  // Check parent nav item as a catch-all
-                  const parentNav = NAV.find(
-                    (n) => n.key === module || n.children?.some((c) => c.key === module)
-                  )
-                  if (parentNav && parentNav.key !== "hrms" && parentNav.key !== "admin") {
-                    if (
-                      userPermissions.includes(parentNav.key) ||
-                      userPermissions.some((p) => p.startsWith(parentNav.key + ":") || p.startsWith(parentNav.key + "."))
-                    ) {
-                      return true
-                    }
-                  }
-
-                  return false
-                })()
+                const currentModuleHasAccess = isModuleAccessible(module, userRole, userPermissions, activeStaff)
 
                 return (
                   <PageErrorBoundary resetKey={module}>
@@ -2984,12 +3004,8 @@ export default function App() {
                         userRole={userRole}
                         userPermissions={userPermissions}
                         onNavigateHome={() => {
-                          const firstAllowed = NAV.find((n) =>
-                            userPermissions.includes(n.key) ||
-                            userPermissions.some((p) => p.startsWith(n.key + ":") || p.startsWith(n.key + ".")) ||
-                            n.children?.some((c) => userPermissions.includes(c.key) || userPermissions.some((p) => p.startsWith(c.key + ":")))
-                          )?.key || "dashboard"
-                          setModule(firstAllowed as Module)
+                          const firstAllowed = getFirstAllowedModule(userRole, userPermissions, activeStaff)
+                          setModule(firstAllowed)
                         }}
                         onOpenAdmin={isSuperAdminUser ? () => setModule("admin") : undefined}
                         onNavigateToModule={(mod) => setModule(mod as Module)}
@@ -3100,6 +3116,7 @@ export default function App() {
                 module === "billing_er" ||
                 module === "billing_unified") && (
                   <Billing
+                    key={module}
                     view={module === "billing_unified" ? "unified" : "counter"}
                     scope={
                       module === "billing_op"
@@ -3192,6 +3209,8 @@ export default function App() {
                       ? "xray"
                       : "all"
                   }
+                  technician={activeStaff?.name}
+                  role={userRole}
                   onNavigateView={(view, subParam) => {
                     const mapping: Record<string, Module> = {
                       overview: "radiology",

@@ -403,6 +403,9 @@ export interface RadiologyReportRecord {
   status: "Draft" | "Final" | "AWAITING_REPORT" | "DRAFT_SAVED" | "UNDER_REVIEW" | "CORRECTION_REQUIRED" | "FINALIZED" | string
   savedAt: string
   finalizedAt?: string
+  findings?: string[]
+  impression?: string[]
+  role?: string
   // Preservation of exact historical template layout used at signing
   reconstructedDocumentSnapshot?: ReconstructedDocument
 }
@@ -1876,6 +1879,9 @@ export class RadiologyTemplateDatabase {
     technicianNotes?: string
     technicianSignature?: string
     radiologistName?: string
+    findings?: string[]
+    impression?: string[]
+    role?: string
     uploadedFileUrl?: string
     uploadedFileName?: string
     uploadedFileType?: string
@@ -1937,6 +1943,9 @@ export class RadiologyTemplateDatabase {
     technicianNotes?: string
     technicianSignature?: string
     radiologistName?: string
+    findings?: string[]
+    impression?: string[]
+    role?: string
     uploadedFileUrl?: string
     uploadedFileName?: string
     uploadedFileType?: string
@@ -1959,52 +1968,70 @@ export class RadiologyTemplateDatabase {
     const tpl = this.getTemplateById(reportData.templateId) || this.getActiveTemplateForTest(reportData.testName)
     const reconstructedSnapshot = tpl?.reconstructedDocument ? JSON.parse(JSON.stringify(tpl.reconstructedDocument)) : undefined
 
+    const findingsList: string[] = reportData.findings && reportData.findings.length > 0 ? [...reportData.findings] : []
+    const impressionList: string[] = reportData.impression && reportData.impression.length > 0 ? [...reportData.impression] : []
+
+    if (findingsList.length === 0 || impressionList.length === 0) {
+      reportData.templateStructure.forEach((sec) => {
+        sec.fields.forEach((f) => {
+          const val = reportData.fieldValues[f.id]
+          if (val !== undefined && val !== null && val !== "") {
+            const textVal = `${f.label}: ${val}`
+            if (sec.title.toLowerCase().includes("impression") || sec.title.toLowerCase().includes("conclusion")) {
+              if (impressionList.length === 0) impressionList.push(textVal)
+            } else {
+              if (findingsList.length === 0) findingsList.push(textVal)
+            }
+          }
+        })
+      })
+    }
+
     const record: RadiologyReportRecord = {
       id: existingIndex >= 0 ? reports[existingIndex].id : `RAD-RPT-${Math.floor(10000 + Math.random() * 90000)}`,
       ...reportData,
       status: "Final",
       savedAt: now,
-      finalizedAt: now,
+      finalizedAt: (existingIndex >= 0 && reports[existingIndex].finalizedAt) ? reports[existingIndex].finalizedAt : now,
+      technicianName: reportData.radiologistName,
       reconstructedDocumentSnapshot: (existingIndex >= 0 && reports[existingIndex].reconstructedDocumentSnapshot) ? reports[existingIndex].reconstructedDocumentSnapshot : reconstructedSnapshot,
+      findings: findingsList,
+      impression: impressionList,
+      role: reportData.role,
     }
 
     if (existingIndex >= 0) {
       reports[existingIndex] = record
     } else {
-      reports.push(record)
+      reports.unshift(record)
     }
 
     this.save(STORAGE_KEY_REPORTS, reports)
 
-    const findingsList: string[] = []
-    const impressionList: string[] = []
-
-    reportData.templateStructure.forEach((sec) => {
-      sec.fields.forEach((f) => {
-        const val = reportData.fieldValues[f.id]
-        if (val !== undefined && val !== null && val !== "") {
-          const textVal = `${f.label}: ${val}`
-          if (sec.title.toLowerCase().includes("impression") || sec.title.toLowerCase().includes("conclusion")) {
-            impressionList.push(textVal)
-          } else {
-            findingsList.push(textVal)
-          }
-        }
-      })
-    })
-
     try {
       BillingDatabase.updateRadiologyStudy(reportData.studyId, {
         status: "Final",
-        reportStatus: "Final",
-        findings: findingsList.length > 0 ? findingsList : undefined,
-        impression: impressionList.length > 0 ? impressionList : undefined,
+        reportStatus: "Finalized",
+        normalizedReportStatus: "Finalized",
+        workflowStatus: "FINALIZED",
+        finalizedAt: record.finalizedAt || now,
+        finalizedBy: reportData.radiologistName || "Radiology Specialist",
+        finalizedRole: reportData.role || "Radiology Specialist",
+        ...(findingsList.length > 0 ? { findings: findingsList } : {}),
+        ...(impressionList.length > 0 ? { impression: impressionList } : {}),
         radiologist: reportData.radiologistName || "Radiology Specialist",
         signedAt: now,
-      })
+      } as any)
     } catch (e) {
       console.warn("Error syncing study with BillingDatabase", e)
     }
+
+    try {
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("hospai_rad_workflow_updated"))
+      }
+      new BroadcastChannel("hospai_rad_channel").postMessage("updated")
+    } catch {}
 
     AuditDatabase.logEvent(
       "Radiology Report Finalized",

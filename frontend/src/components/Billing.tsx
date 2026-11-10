@@ -35,6 +35,7 @@ import {
   Stethoscope,
   TrendingUp,
   Banknote,
+  Check,
   CheckCircle2,
   CreditCard,
   Landmark,
@@ -191,6 +192,19 @@ const VIEW_HEADINGS: Record<Exclude<BillingView, "counter">, { title: string ;su
   },
 }
 
+export const isClaimFullySettled = (c: ClaimRecord): boolean => {
+  if ((c.balanceDue || 0) > 0) return false
+  if (isInsured(c)) {
+    return c.tpa?.settledAt !== undefined || c.status === "Paid" || claimStage(c) === "Settled"
+  }
+  return c.status === "Paid" || (c.balanceDue || 0) <= 0
+}
+
+export const isClaimPendingDue = (c: ClaimRecord): boolean => {
+  if (isClaimFullySettled(c)) return false
+  return (c.balanceDue || 0) > 0
+}
+
 export default function Billing({
   view = "counter",
   scope = "all",
@@ -235,6 +249,11 @@ export default function Billing({
 
   // ── Selected Patient / Bill for POS Settlement ──────────────────────────────
   const [selectedClaimId, setSelectedClaimId] = useState<string | null>(null)
+
+  useEffect(() => {
+    setStatusFilter("unpaid")
+    setSelectedClaimId(null)
+  }, [scope])
 
   // ── POS Payment Form State ──────────────────────────────────────────────────
   const [payMode, setPayMode] =
@@ -452,11 +471,23 @@ export default function Billing({
   const filteredClaims = useMemo(() => {
     const list = scopedClaims.filter((c) => {
       // Dept filter
-      if (deptFilter !== "All" && c.department !== deptFilter) return false
+      if (deptFilter !== "All") {
+        const matchesMainDept = c.department === deptFilter
+        const hasDeptItem = (c.items || []).some((it) => {
+          if (deptFilter === "Laboratory") return it.category === "Laboratory"
+          if (deptFilter === "Radiology") return (it.category as string) === "Radiology" || (it.category as string) === "Radiology / Imaging"
+          return it.category === deptFilter
+        })
+        if (!matchesMainDept && !hasDeptItem) return false
+      }
       // Status filter
-      if (statusFilter === "unpaid" && (c.balanceDue || 0) <= 0) return false
-      if (statusFilter === "settled" && (c.balanceDue || 0) > 0) return false
-      if (statusFilter === "insurance" && !isInsured(c)) return false
+      if (statusFilter === "unpaid") {
+        if (!isClaimPendingDue(c)) return false
+      } else if (statusFilter === "settled") {
+        if (!isClaimFullySettled(c)) return false
+      } else if (statusFilter === "insurance") {
+        if (!isInsured(c)) return false
+      }
       // Search query
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase()
@@ -579,7 +610,8 @@ export default function Billing({
       const hasDiag =
         clearanceStatus.hasLabOrders || clearanceStatus.hasRadStudies
 
-      if (hasDiag) {
+      // Only dispatch departmental clearance when the bill is FULLY SETTLED (balanceDue <= 0)
+      if ((claim.balanceDue || 0) <= 0 && hasDiag) {
         if (clearanceStatus.hasLabOrders) {
           BillingDatabase.dispatchClearanceToDepartment(
             claim.patientName,
@@ -604,6 +636,15 @@ export default function Billing({
         `✓ Payment of ₹${payAmount.toLocaleString("en-IN")} recorded successfully! Receipt ${payment.receiptNo} generated.`,
         "success",
       )
+
+      // Transition queue tab: if fully settled, show in "settled" tab immediately!
+      if ((claim.balanceDue || 0) <= 0) {
+        setStatusFilter("settled")
+        setSelectedClaimId(claim.id)
+      } else {
+        setStatusFilter("unpaid")
+        setSelectedClaimId(claim.id)
+      }
 
       // Reset form
       setCashierNotes("")
@@ -1099,13 +1140,11 @@ export default function Billing({
                     {scope === "all" ? "Patient Queue" : `${heading.title} Queue`} ({filteredClaims.length})
                   </h3>
                   <div className="flex items-center gap-1">
-                    {(scope === "op"
-                      ? (["unpaid", "settled", "all"] as const)
-                      : (["unpaid", "insurance", "settled", "all"] as const)
-                    ).map((st) => (
+                    {(["unpaid", "insurance", "settled", "all"] as const).map((st) => (
                       <button
                         key={st}
                         type="button"
+                        data-billing-tab={st}
                         onClick={() => setStatusFilter(st)}
                         className={`px-1.5 py-0.5 text-[9.5px] font-bold uppercase transition-colors cursor-pointer ${
                           statusFilter === st
@@ -1120,7 +1159,7 @@ export default function Billing({
                 </div>
 
                 {/* Queue List of Patient Bills */}
-                <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
+                <div data-billing-queue className="flex-1 overflow-y-auto divide-y divide-slate-100">
                   {filteredClaims.length === 0 ? (
                     <div className="p-6 text-center text-[12px] text-slate-500">
                       No matching patient bills found.
@@ -1330,6 +1369,19 @@ export default function Billing({
                             >
                               <Printer size={14} /> Print Bill
                             </button>
+                            {balance > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPayAmount(balance)
+                                  setShowConfirmPayModal(true)
+                                }}
+                                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[12px] font-bold rounded-sm cursor-pointer transition-colors inline-flex items-center gap-1.5 shrink-0 shadow-xs"
+                                title="Settle Outstanding Balance"
+                              >
+                                <Check size={14} /> Settle Bill
+                              </button>
+                            )}
                             <SendToPatientButton
                               label="Send to patient"
                               className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[12px] font-bold rounded-sm cursor-pointer transition-colors inline-flex items-center gap-1.5 shrink-0 shadow-xs"
@@ -1417,7 +1469,7 @@ export default function Billing({
                                       colSpan={5}
                                       className="px-5 py-1.5 text-[10.5px] font-bold uppercase tracking-wider text-[#475569]"
                                     >
-                                      {cat}
+                                      {(cat as string) === "Radiology / Imaging" ? "Radiology" : cat}
                                     </td>
                                     {cashless && (
                                       <td className="px-2 py-1.5 text-right font-mono text-[11px] font-semibold text-blue-800">
@@ -1666,21 +1718,19 @@ export default function Billing({
                                 </div>
                               </div>
                             ) : payMode === "UPI / Digital" ? (
-                              <div className="p-3 bg-[#F8FAFC] border border-[#E2E8F0] flex items-center gap-4">
-                                <img
-                                  src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=upi://pay?pa=hospital.cashier@hdfcbank&pn=CityCentralHospital&am=${payAmount}&cu=INR`}
-                                  alt="UPI QR code for this amount"
-                                  className="w-20 h-20 bg-white border border-[#E2E8F0] p-1 shrink-0"
-                                />
+                              <div className="p-3 bg-[#F8FAFC] border border-[#E2E8F0] flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center shrink-0 text-blue-600">
+                                  <Smartphone size={20} />
+                                </div>
                                 <div className="text-[12px] text-[#475569]">
                                   <div className="font-semibold text-[#0F172A]">
-                                    Scan to pay {inr(payAmount)}
+                                    UPI / Digital Payment — {inr(payAmount)}
                                   </div>
                                   <div className="font-mono text-[11.5px] mt-0.5">
                                     hospital.cashier@hdfcbank
                                   </div>
                                   <div className="text-[11px] text-[#94A3B8] mt-0.5">
-                                    Any UPI app — BHIM, GPay, PhonePe, Paytm.
+                                    Collect via UPI app (BHIM, GPay, PhonePe, Paytm) or digital terminal.
                                   </div>
                                 </div>
                               </div>

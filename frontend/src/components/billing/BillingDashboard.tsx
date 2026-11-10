@@ -158,7 +158,7 @@ export default function BillingDashboard({
   const unpaid = useMemo(
     () =>
       claims
-        .filter((c) => (c.balanceDue || 0) > 0)
+        .filter((c) => c.status !== "Paid" && (c.balanceDue || 0) > 0)
         .sort((a, b) => {
           const timeB = new Date(b.createdAt || b.dateOfService || 0).getTime()
           const timeA = new Date(a.createdAt || a.dateOfService || 0).getTime()

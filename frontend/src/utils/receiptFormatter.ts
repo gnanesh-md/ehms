@@ -299,11 +299,11 @@ export function groupReceiptItems(items: InvoiceItem[]): ReceiptItemSection[] {
         ? "ENT CONSULTATION"
         : "DOCTOR CONSULTATION"
     } else if (item.category === "Laboratory") {
-      mainCategory = "Laboratory Charges"
-      subCategory = "LABORATORY SERVICES"
-    } else if (item.category === "Radiology / Imaging") {
-      mainCategory = "Radiology Charges"
-      subCategory = "RADIOLOGY & IMAGING"
+      mainCategory = "Laboratory Investigations"
+      subCategory = ""
+    } else if (item.category === "Radiology / Imaging" || item.category === "Radiology") {
+      mainCategory = "Radiology Investigations"
+      subCategory = ""
     } else if (
       item.description.toLowerCase().includes("oxygen") ||
       item.description.toLowerCase().includes("emergency")
@@ -339,13 +339,13 @@ export function groupReceiptItems(items: InvoiceItem[]): ReceiptItemSection[] {
     const qty = item.quantity || 1
     const rate = item.unitPrice || Math.round(amount / qty)
 
-    let displayDesc = item.description.toUpperCase()
+    let displayDesc = item.description
     if (
       isDoctor &&
-      !displayDesc.startsWith("N - ") &&
-      !displayDesc.startsWith("DR.")
+      !displayDesc.toUpperCase().startsWith("N - ") &&
+      !displayDesc.toUpperCase().startsWith("DR.")
     ) {
-      displayDesc = `N - DR. ${displayDesc}`
+      displayDesc = `N - DR. ${displayDesc.toUpperCase()}`
     }
 
     sectionsMap[key].items.push({

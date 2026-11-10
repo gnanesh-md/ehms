@@ -167,6 +167,120 @@ function getStudyTimestamp(study: Partial<ExtendedRadiologyRecord>): number {
   return RadiologyWorkflowDb.getOrderCreationTimestamp(study)
 }
 
+export interface ConsolidatedRadiologyGroup {
+  groupKey: string
+  primaryStudy: ExtendedRadiologyRecord
+  patient: string
+  age?: number
+  gender?: string
+  umr: string
+  mrn?: string
+  opNumber?: string
+  encounterId?: string
+  ordered: string
+  provider: string
+  department?: string
+  priority: "STAT" | "Urgent" | "Routine"
+  isPaid: boolean
+  paidReceiptNo?: string
+  billingStatus?: string
+  hasAuthorizedException: boolean
+  authorizedException?: any
+  hasBillingDiscrepancy?: boolean
+  billingDiscrepancyReason?: string
+  studies: ExtendedRadiologyRecord[]
+}
+
+function getRadiologyGroupKey(study: ExtendedRadiologyRecord): string {
+  const normUmr = (study.umr || study.mrn || "").trim().toUpperCase().replace(/^(UMR|PAT|MRN|PATIENT)[-_]?/, "")
+  const enc = (study.opNumber || study.encounterId || "").trim().toUpperCase().replace(/^(OP|ENC|VISIT)[-_]?/, "")
+  const date = (study.ordered || study.orderDate || "").split("T")[0].split("·")[0].trim()
+  if (normUmr && enc) return `${normUmr}|${enc}`
+  if (normUmr && date) return `${normUmr}|${date}`
+  if (normUmr) return normUmr
+  return study.id || (study.patient || "").trim().toLowerCase()
+}
+
+function groupStudiesByPatient(studies: ExtendedRadiologyRecord[]): ConsolidatedRadiologyGroup[] {
+  const map = new Map<string, ConsolidatedRadiologyGroup>()
+
+  for (const study of studies) {
+    const key = getRadiologyGroupKey(study)
+    const existing = map.get(key)
+    if (!existing) {
+      const isPaid = Boolean(
+        study.isPaid ||
+        study.paymentStatus === "Paid" ||
+        (study.paymentStatusDisplay || "").toUpperCase() === "PAID"
+      )
+      const hasAuth = study.billingStatus === "Authorized Exception" || Boolean(study.authorizedException)
+
+      map.set(key, {
+        groupKey: key,
+        primaryStudy: study,
+        patient: study.patient,
+        age: study.age,
+        gender: study.gender,
+        umr: study.umr || study.mrn || "",
+        mrn: study.mrn,
+        opNumber: study.opNumber,
+        encounterId: study.encounterId,
+        ordered: study.ordered || "",
+        provider: study.provider || "",
+        department: study.department,
+        priority: study.priority === "STAT" ? "STAT" : (study.priority as string) === "Urgent" ? "Urgent" : "Routine",
+        isPaid,
+        paidReceiptNo: study.paidReceiptNo,
+        billingStatus: study.billingStatus,
+        hasAuthorizedException: hasAuth,
+        authorizedException: study.authorizedException,
+        hasBillingDiscrepancy: study.hasBillingDiscrepancy,
+        billingDiscrepancyReason: study.billingDiscrepancyReason,
+        studies: [study],
+      })
+    } else {
+      existing.studies.push(study)
+      if (study.priority === "STAT") {
+        existing.priority = "STAT"
+      } else if ((study.priority as string) === "Urgent" && existing.priority !== "STAT") {
+        existing.priority = "Urgent"
+      }
+      if (study.paidReceiptNo && !existing.paidReceiptNo) {
+        existing.paidReceiptNo = study.paidReceiptNo
+      }
+      if (study.billingStatus === "Authorized Exception" || study.authorizedException) {
+        existing.hasAuthorizedException = true
+        if (!existing.authorizedException) {
+          existing.authorizedException = study.authorizedException
+        }
+      }
+      if (study.hasBillingDiscrepancy) {
+        existing.hasBillingDiscrepancy = true
+        existing.billingDiscrepancyReason = study.billingDiscrepancyReason
+      }
+      if (!existing.age && study.age) existing.age = study.age
+      if (!existing.gender && study.gender) existing.gender = study.gender
+      if (!existing.opNumber && study.opNumber) existing.opNumber = study.opNumber
+      if (!existing.encounterId && study.encounterId) existing.encounterId = study.encounterId
+      if (!existing.provider && study.provider) existing.provider = study.provider
+    }
+  }
+
+  // A group is only fully paid if EVERY study in the group is paid/cleared
+  map.forEach((grp) => {
+    grp.isPaid = grp.studies.every(
+      (s) =>
+        s.isPaid ||
+        s.paymentStatus === "Paid" ||
+        (s.paymentStatusDisplay || "").toUpperCase() === "PAID" ||
+        s.billingStatus === "Authorized Exception" ||
+        Boolean(s.authorizedException)
+    )
+  })
+
+  return Array.from(map.values())
+}
+
 interface RadiologyWorklistViewProps {
   onNavigateToScanning: (studyId: string) => void
   onNavigateToReporting: (studyId: string) => void
@@ -227,6 +341,7 @@ export default function RadiologyWorklistView({
 
   // Drawer / Modal states
   const [selectedDrawerStudy, setSelectedDrawerStudy] = useState<ExtendedRadiologyRecord | null>(null)
+  const [selectedDrawerGroup, setSelectedDrawerGroup] = useState<ConsolidatedRadiologyGroup | null>(null)
   const [patientModalStudy, setPatientModalStudy] = useState<ExtendedRadiologyRecord | null>(null)
   const [pdfStudy, setPdfStudy] = useState<ExtendedRadiologyRecord | null>(null)
   const [toastMessage, setToastMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null)
@@ -386,12 +501,26 @@ export default function RadiologyWorklistView({
     })
   }, [filteredStudies, sortField, sortDirection])
 
-  const paginatedStudies = useMemo(() => {
-    const start = (currentPage - 1) * pageSize
-    return sortedStudies.slice(start, start + pageSize)
-  }, [sortedStudies, currentPage, pageSize])
+  const consolidatedGroups = useMemo(() => {
+    return groupStudiesByPatient(sortedStudies)
+  }, [sortedStudies])
 
-  const totalPages = Math.ceil(sortedStudies.length / pageSize) || 1
+  const paginatedGroups = useMemo(() => {
+    const start = (currentPage - 1) * pageSize
+    return consolidatedGroups.slice(start, start + pageSize)
+  }, [consolidatedGroups, currentPage, pageSize])
+
+  const totalPages = Math.ceil(consolidatedGroups.length / pageSize) || 1
+
+  const handleSelectGroup = (group: ConsolidatedRadiologyGroup) => {
+    setSelectedDrawerGroup(group)
+    setSelectedDrawerStudy(group.primaryStudy)
+  }
+
+  const handleCloseDrawer = () => {
+    setSelectedDrawerStudy(null)
+    setSelectedDrawerGroup(null)
+  }
 
   // Operational Transitions
   const handleOpenScanning = (study: ExtendedRadiologyRecord, e?: React.MouseEvent) => {
@@ -516,7 +645,7 @@ export default function RadiologyWorklistView({
             <h3 className="text-base font-bold text-[#0F172A] flex items-center gap-2">
               <span>Universal Examination Worklist</span>
               <span className="text-[12px] bg-blue-100 text-[#1B4FD8] font-bold px-2 py-0.5 rounded-full font-mono">
-                {filteredStudies.length} matching
+                {consolidatedGroups.length} patient orders ({filteredStudies.length} investigations)
               </span>
             </h3>
             <p className="text-[12px] text-[#64748B]">All incoming orders, active scanning rooms, and reporting statuses</p>
@@ -729,97 +858,121 @@ export default function RadiologyWorklistView({
               </tr>
             </thead>
             <tbody className="divide-y divide-[#E2E8F0]">
-              {paginatedStudies.length === 0 ? (
+              {paginatedGroups.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-12 text-center text-[#64748B]">
                     No examination records match the selected filters.
                   </td>
                 </tr>
               ) : (
-                paginatedStudies.map((study) => {
-                  const isReadyToScan = study.normalizedStatus === "ORDERED"
-                  const isScanning = study.normalizedStatus === "IN PROGRESS"
-                  const isDone = study.normalizedStatus === "DONE"
-                  const canReport =
-                    isDone ||
-                    study.sentToReporting ||
-                    study.normalizedReportStatus === "Draft" ||
-                    study.normalizedReportStatus === "Awaiting Report" ||
-                    study.normalizedReportStatus === "Submitted for Review" ||
-                    study.normalizedReportStatus === "Finalized"
+                paginatedGroups.map((group) => {
+                  const isMulti = group.studies.length > 1
+                  const doneCount = group.studies.filter((s) => s.normalizedStatus === "DONE").length
+                  const inProgCount = group.studies.filter((s) => s.normalizedStatus === "IN PROGRESS").length
+                  const totalCount = group.studies.length
 
                   return (
                     <tr
-                      key={study.id}
-                      onClick={() => setSelectedDrawerStudy(study)}
+                      key={group.groupKey}
+                      onClick={() => handleSelectGroup(group)}
                       className="hover:bg-blue-50/30 transition-colors cursor-pointer group"
                     >
                       {/* Order Time */}
-                      <td className="py-3 px-3 font-mono text-[11.5px] text-[#64748B] whitespace-nowrap">
-                        {study.ordered || "—"}
+                      <td className="py-3 px-3 font-mono text-[11.5px] text-[#64748B] whitespace-nowrap align-top">
+                        {group.ordered || "—"}
                       </td>
 
                       {/* Patient & UMR */}
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-4 align-top">
                         <div className="font-bold text-[#0F172A] group-hover:text-[#1B4FD8] transition-colors flex items-center gap-1.5 flex-wrap">
-                          <span>{study.patient}</span>
-                          {(study.age || study.gender) && (
+                          <span>{group.patient}</span>
+                          {(group.age || group.gender) && (
                             <span className="text-[11.5px] font-medium text-slate-500">
-                              ({study.age ? `${study.age} Y` : ""}{study.age && study.gender ? " · " : ""}{study.gender || ""})
+                              ({group.age ? `${group.age} Y` : ""}{group.age && group.gender ? " · " : ""}{group.gender || ""})
                             </span>
                           )}
-                          {study.priority === "STAT" && (
+                          {group.priority === "STAT" && (
                             <span className="bg-red-100 text-red-800 text-[9.5px] px-1.5 py-0.2 rounded font-bold uppercase animate-pulse">
                               STAT
                             </span>
                           )}
                         </div>
                         <div className="text-[11px] text-[#64748B] font-mono mt-0.5 flex items-center gap-2 flex-wrap">
-                          <span>UMR: {study.umr || study.mrn || "—"}</span>
-                          <span>OP: {study.opNumber || (study.encounterId?.startsWith("OP-") ? study.encounterId : `OP-${(study.umr || study.mrn || "").replace(/\D/g, "")}`) || "—"}</span>
-                          <span className="text-[#1B4FD8] font-bold">Order: {study.id}</span>
-                          {study.encounterId && !study.encounterId.startsWith("OP-") && <span>• {study.encounterId}</span>}
+                          <span>UMR: {group.umr || group.mrn || "—"}</span>
+                          <span>OP: {group.opNumber || (group.encounterId?.startsWith("OP-") ? group.encounterId : `OP-${(group.umr || group.mrn || "").replace(/\D/g, "")}`) || "—"}</span>
+                          <span className="text-[#1B4FD8] font-bold">
+                            Order: {isMulti ? `${group.primaryStudy.id} (+${group.studies.length - 1})` : group.primaryStudy.id}
+                          </span>
+                          {group.encounterId && !group.encounterId.startsWith("OP-") && <span>• {group.encounterId}</span>}
                         </div>
                       </td>
 
                       {/* Examination & Modality */}
-                      <td className="py-3 px-3">
-                        <div className="font-semibold text-[#0F172A]">{study.study}</div>
-                        <div className="text-[11px] text-[#1B4FD8] font-medium mt-0.5 flex items-center gap-1.5 flex-wrap">
-                          <span>{getCanonicalRadiologyModality(study)}</span>
-                          {study.department && study.department !== getCanonicalRadiologyModality(study) && (
-                            <span className="text-slate-400 font-normal">• {study.department}</span>
-                          )}
-                        </div>
-                        <div className="text-[10.5px] text-slate-500 mt-0.5 flex items-center gap-1">
-                          <span>Ordered by:</span>
-                          <span className="font-semibold text-slate-700">{study.provider || "Attending Doctor"}</span>
-                        </div>
+                      <td className="py-3 px-3 align-top">
+                        {!isMulti ? (
+                          <div>
+                            <div className="font-semibold text-[#0F172A]">{group.studies[0].study}</div>
+                            <div className="text-[11px] text-[#1B4FD8] font-medium mt-0.5 flex items-center gap-1.5 flex-wrap">
+                              <span>{getCanonicalRadiologyModality(group.studies[0])}</span>
+                              {group.studies[0].department && group.studies[0].department !== getCanonicalRadiologyModality(group.studies[0]) && (
+                                <span className="text-slate-400 font-normal">• {group.studies[0].department}</span>
+                              )}
+                            </div>
+                            <div className="text-[10.5px] text-slate-500 mt-0.5 flex items-center gap-1">
+                              <span>Ordered by:</span>
+                              <span className="font-semibold text-slate-700">{group.provider || "Attending Doctor"}</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-1.5">
+                            <div className="space-y-1">
+                              {group.studies.map((s, idx) => (
+                                <div key={s.id || idx} className="flex items-center gap-1.5 text-[12px] flex-wrap">
+                                  <span className="font-semibold text-[#0F172A]">{s.study}</span>
+                                  <span className="text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.2 rounded">
+                                    {getCanonicalRadiologyModality(s)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="text-[11px] text-blue-700 font-bold">
+                              {group.studies.length} investigation(s)
+                            </div>
+                            <div className="text-[10.5px] text-slate-500 flex items-center gap-1">
+                              <span>Ordered by:</span>
+                              <span className="font-semibold text-slate-700">{group.provider || "Attending Doctor"}</span>
+                            </div>
+                          </div>
+                        )}
                       </td>
 
                       {/* Priority */}
-                      <td className="py-3 px-2 text-center whitespace-nowrap">
+                      <td className="py-3 px-2 text-center whitespace-nowrap align-top">
                         <span
-                          className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase font-mono ${study.priority === "STAT"
-                            ? "bg-red-100 text-red-800 border border-red-300"
-                            : (study.priority as string) === "Urgent"
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase font-mono ${
+                            group.priority === "STAT"
+                              ? "bg-red-100 text-red-800 border border-red-300"
+                              : group.priority === "Urgent"
                               ? "bg-amber-100 text-amber-800 border border-amber-300"
                               : "bg-slate-100 text-slate-700 border border-slate-200"
-                            }`}
+                          }`}
                         >
-                          {study.priority || "Routine"}
+                          {group.priority || "Routine"}
                         </span>
                       </td>
 
                       {/* Billing State */}
-                      <td className="py-3 px-3 whitespace-nowrap">
+                      <td className="py-3 px-3 whitespace-nowrap align-top">
                         <div className="flex flex-col gap-1 items-start">
-                          {study.isPaid ? (
+                          {group.isPaid ? (
                             <span className="text-[11px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
-                              ✓ PAID {study.paidReceiptNo ? `(${study.paidReceiptNo})` : ""}
+                              ✓ PAID {group.paidReceiptNo ? `(${group.paidReceiptNo})` : ""}
                             </span>
-                          ) : study.billingStatus === "Authorized Exception" ? (
-                            <span className="text-[11px] font-bold text-purple-800 bg-purple-50 border border-purple-200 px-2 py-0.5 rounded" title={study.authorizedException ? `Authorized by ${study.authorizedException.user}: ${study.authorizedException.reason}` : "Authorized Exception"}>
+                          ) : group.hasAuthorizedException ? (
+                            <span
+                              className="text-[11px] font-bold text-purple-800 bg-purple-50 border border-purple-200 px-2 py-0.5 rounded"
+                              title={group.authorizedException ? `Authorized by ${group.authorizedException.user}: ${group.authorizedException.reason}` : "Authorized Exception"}
+                            >
                               ★ Auth Exception
                             </span>
                           ) : (
@@ -827,10 +980,10 @@ export default function RadiologyWorklistView({
                               ⏳ AWAITING BILLING
                             </span>
                           )}
-                          {study.hasBillingDiscrepancy && (
+                          {group.hasBillingDiscrepancy && (
                             <span
                               className="text-[10px] font-bold text-rose-800 bg-rose-50 border border-rose-300 px-1.5 py-0.2 rounded flex items-center gap-1"
-                              title={study.billingDiscrepancyReason || "Scan completed while billing was pending without authorized exception"}
+                              title={group.billingDiscrepancyReason || "Scan completed while billing was pending without authorized exception"}
                             >
                               <AlertTriangle className="w-2.5 h-2.5 text-rose-600" />
                               <span>⚠️ Billing Discrepancy</span>
@@ -840,19 +993,19 @@ export default function RadiologyWorklistView({
                       </td>
 
                       {/* Scanning State */}
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        {isScanning ? (
-                          <span className="text-[11px] font-bold text-blue-800 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded flex items-center gap-1 w-max">
-                            <span className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-ping"></span>
-                            In Scanning
-                          </span>
-                        ) : study.sentToReporting || study.status === "Sent for Reporting" ? (
-                          <span className="text-[11px] font-bold text-purple-800 bg-purple-50 border border-purple-200 px-2 py-0.5 rounded flex items-center gap-1 w-max">
-                            ✓ Sent for Reporting
-                          </span>
-                        ) : isDone ? (
+                      <td className="py-3 px-3 whitespace-nowrap align-top">
+                        {doneCount === totalCount ? (
                           <span className="text-[11px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
                             ✓ Scan Done
+                          </span>
+                        ) : inProgCount > 0 ? (
+                          <span className="text-[11px] font-bold text-blue-800 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded flex items-center gap-1 w-max">
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-ping"></span>
+                            In Scanning {isMulti ? `(${inProgCount}/${totalCount})` : ""}
+                          </span>
+                        ) : doneCount > 0 ? (
+                          <span className="text-[11px] font-bold text-sky-800 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded">
+                            {doneCount}/{totalCount} Scanned
                           </span>
                         ) : (
                           <span className="text-[11px] font-medium text-slate-600 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded">
@@ -862,15 +1015,40 @@ export default function RadiologyWorklistView({
                       </td>
 
                       {/* Reporting Status */}
-                      <td className="py-3 px-3 whitespace-nowrap">
+                      <td className="py-3 px-3 whitespace-nowrap align-top">
                         {(() => {
-                          const repInfo = resolveReportingStatus(study)
+                          if (!isMulti) {
+                            const repInfo = resolveReportingStatus(group.studies[0])
+                            return (
+                              <span className={`text-[11px] font-bold px-2.5 py-1 rounded border flex items-center gap-1.5 w-max ${repInfo.badgeClass}`}>
+                                <span className={`w-1.5 h-1.5 rounded-full ${repInfo.dotClass}`} />
+                                <span>{repInfo.label}</span>
+                              </span>
+                            )
+                          }
+                          const statuses = group.studies.map((s) => resolveReportingStatus(s))
+                          const finalizedCount = statuses.filter((st) => st.status === "Finalized").length
+                          if (finalizedCount === totalCount) {
+                            return (
+                              <span className="text-[11px] font-bold px-2.5 py-1 rounded border flex items-center gap-1.5 w-max bg-emerald-50 text-emerald-800 border-emerald-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                <span>Finalized</span>
+                              </span>
+                            )
+                          }
+                          if (finalizedCount > 0) {
+                            return (
+                              <span className="text-[11px] font-bold px-2.5 py-1 rounded border flex items-center gap-1.5 w-max bg-purple-50 text-purple-800 border-purple-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+                                <span>{finalizedCount}/{totalCount} Finalized</span>
+                              </span>
+                            )
+                          }
+                          const firstRep = statuses[0]
                           return (
-                            <span
-                              className={`text-[11px] font-bold px-2.5 py-1 rounded border flex items-center gap-1.5 w-max ${repInfo.badgeClass}`}
-                            >
-                              <span className={`w-1.5 h-1.5 rounded-full ${repInfo.dotClass}`} />
-                              <span>{repInfo.label}</span>
+                            <span className={`text-[11px] font-bold px-2.5 py-1 rounded border flex items-center gap-1.5 w-max ${firstRep.badgeClass}`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${firstRep.dotClass}`} />
+                              <span>{firstRep.label}</span>
                             </span>
                           )
                         })()}
@@ -887,7 +1065,7 @@ export default function RadiologyWorklistView({
         <div className="p-3 border-t border-[#DDE2EC] bg-[#F8FAFC] flex flex-col sm:flex-row items-center justify-between gap-3 text-[12px] text-[#64748B]">
           <div>
             Showing {(currentPage - 1) * pageSize + 1} to{" "}
-            {Math.min(currentPage * pageSize, sortedStudies.length)} of {sortedStudies.length} studies
+            {Math.min(currentPage * pageSize, consolidatedGroups.length)} of {consolidatedGroups.length} patient orders ({sortedStudies.length} investigations)
           </div>
 
           <div className="flex items-center gap-2">
@@ -917,7 +1095,7 @@ export default function RadiologyWorklistView({
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-2xs z-50 flex justify-end transition-all">
           <div className="bg-white w-full max-w-xl h-full shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-right duration-200">
             {/* Drawer Header */}
-            <div className="px-6 py-4 bg-[#0F172A] text-white flex items-center justify-between">
+            <div className="px-6 py-4 bg-[#0F172A] text-white flex items-center justify-between shrink-0">
               <div>
                 <span className="text-[11px] font-mono text-blue-300 uppercase tracking-wider">
                   Examination Dossier • {selectedDrawerStudy.id}
@@ -925,12 +1103,46 @@ export default function RadiologyWorklistView({
                 <h3 className="text-lg font-bold text-white mt-0.5">{selectedDrawerStudy.study}</h3>
               </div>
               <button
-                onClick={() => setSelectedDrawerStudy(null)}
+                onClick={handleCloseDrawer}
                 className="text-slate-400 hover:text-white p-1 rounded cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {/* Investigation Switcher Tabs when patient has multiple investigations */}
+            {selectedDrawerGroup && selectedDrawerGroup.studies.length > 1 && (
+              <div className="bg-slate-100 px-6 py-2.5 border-b border-slate-200 flex items-center gap-2 overflow-x-auto shrink-0">
+                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider shrink-0">
+                  Investigations ({selectedDrawerGroup.studies.length}):
+                </span>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {selectedDrawerGroup.studies.map((s, idx) => {
+                    const isCurrent = selectedDrawerStudy.id === s.id
+                    return (
+                      <button
+                        key={s.id || idx}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setSelectedDrawerStudy(s)
+                        }}
+                        className={`px-2.5 py-1 rounded text-[11.5px] font-semibold cursor-pointer transition-colors flex items-center gap-1.5 ${
+                          isCurrent
+                            ? "bg-[#1B4FD8] text-white shadow-2xs font-bold"
+                            : "bg-white text-slate-700 hover:bg-slate-200 border border-slate-300"
+                        }`}
+                      >
+                        <span>{idx + 1}. {s.study}</span>
+                        <span className={`text-[9.5px] px-1 py-0.2 rounded font-mono ${isCurrent ? "bg-white/20 text-white" : "bg-blue-50 text-blue-700"}`}>
+                          {getCanonicalRadiologyModality(s)}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Drawer Content */}
             <div className="flex-1 overflow-y-auto p-6 space-y-5 text-[13px]">
@@ -1109,7 +1321,7 @@ export default function RadiologyWorklistView({
                           return
                         }
                         onNavigateToReporting(selectedDrawerStudy.id)
-                        setSelectedDrawerStudy(null)
+                        handleCloseDrawer()
                       }}
                       className="bg-purple-700 hover:bg-purple-800 text-white py-2 px-3 rounded text-[12.5px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs col-span-2"
                     >
@@ -1121,7 +1333,7 @@ export default function RadiologyWorklistView({
                   <button
                     onClick={() => {
                       setPdfStudy(selectedDrawerStudy)
-                      setSelectedDrawerStudy(null)
+                      handleCloseDrawer()
                     }}
                     className="bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 py-2 px-3 rounded text-[12.5px] font-semibold flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
                   >

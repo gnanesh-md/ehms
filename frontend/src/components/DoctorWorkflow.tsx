@@ -822,7 +822,7 @@ export default function DoctorWorkflow({
             age: activeEncounter.age,
             gender: activeEncounter.sex,
             opNumber: activeEncounter.opNumber,
-            mrn: activeEncounter.umr.replace(/\D/g, "") || "10001",
+            mrn: activeEncounter.umr,
             umr: activeEncounter.umr,
             encounterId: activeEncounter.id,
             department: activeEncounter.dept || selectedDoctor.specialty,

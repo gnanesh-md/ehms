@@ -732,7 +732,18 @@ class HospitalDatabase {
   }
 
   public getEncounterById(id: string): DBOPEncounter | undefined {
-    return this.getEncounters().find((e) => e.id === id)
+    if (!id) return undefined
+    const clean = id.toLowerCase().trim()
+    const cleanStripped = clean.replace(/^(clm|enc|op|inv)[-_]?/i, "")
+    return this.getEncounters().find((e) => {
+      if (e.id === id || (e.id && e.id.toLowerCase() === clean)) return true
+      if (e.opNumber && (e.opNumber === id || e.opNumber.toLowerCase() === clean)) return true
+      if (cleanStripped) {
+        if (e.id && e.id.toLowerCase().replace(/^(enc)[-_]?/i, "") === cleanStripped) return true
+        if (e.opNumber && e.opNumber.toLowerCase().replace(/^(op)[-_]?/i, "") === cleanStripped) return true
+      }
+      return false
+    })
   }
 
   // ── Patient Matching & Duplicate Verification ─────────────────────────────
@@ -1412,11 +1423,23 @@ class HospitalDatabase {
     updates: Partial<DBOPEncounter>,
   ): DBOPEncounter {
     const encounters = this.getEncounters()
+    const clean = (id || "").toLowerCase().trim()
+    const cleanStripped = clean.replace(/^(clm|enc|op|inv)[-_]?/i, "")
+    const targetEnc = encounters.find((e) => {
+      if (e.id === id || (e.id && e.id.toLowerCase() === clean)) return true
+      if (e.opNumber && (e.opNumber === id || e.opNumber.toLowerCase() === clean)) return true
+      if (cleanStripped) {
+        if (e.id && e.id.toLowerCase().replace(/^(enc)[-_]?/i, "") === cleanStripped) return true
+        if (e.opNumber && e.opNumber.toLowerCase().replace(/^(op)[-_]?/i, "") === cleanStripped) return true
+      }
+      return false
+    })
+    const targetId = targetEnc ? targetEnc.id : id
 
     let updated: DBOPEncounter | null = null
 
     const newEncounters = encounters.map((e) => {
-      if (e.id === id) {
+      if (e.id === targetId) {
         const assignedDoc =
           updates.assignedDoctor !== undefined
             ? updates.assignedDoctor

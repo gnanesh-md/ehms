@@ -168,6 +168,7 @@ export default function RadiologyReportingView({
   const [showCorrectionModal, setShowCorrectionModal] = useState(false)
   const [correctionReason, setCorrectionReason] = useState("")
   const [isSubmittingCorrection, setIsSubmittingCorrection] = useState(false)
+  const [isFinalizing, setIsFinalizing] = useState(false)
 
   // Template Management Modal State
   const [showTemplateManagerModal, setShowTemplateManagerModal] = useState(false)
@@ -545,17 +546,19 @@ export default function RadiologyReportingView({
     searchQuery,
   ])
 
-  // Order: Newest transferred examination appears at the top.
-  // Sorted strictly by reporting queue entry / transfer timestamp descending.
-  // Stable secondary sort: Examination ID descending.
+  // Predefined Standardized Sorting: Strict First-In, First-Out (FIFO) Reporting Priority.
+  // Display examinations in OLDEST TO NEWEST order (ascending).
+  // The oldest completed examination awaiting reporting must always appear first.
+  // Sorted strictly by original examination/order creation timestamp ascending.
+  // Stable secondary sort key: Examination ID ascending.
   const sortedStudies = useMemo(() => {
     return [...filteredStudies].sort((a, b) => {
       const timeA = RadiologyWorkflowDb.getReportingQueueTimestamp(a)
       const timeB = RadiologyWorkflowDb.getReportingQueueTimestamp(b)
       if (timeA !== timeB) {
-        return timeB - timeA // Newest transferred first
+        return timeA - timeB // Oldest examinations first (FIFO)
       }
-      return (b.id || "").localeCompare(a.id || "")
+      return (a.id || "").localeCompare(b.id || "")
     })
   }, [filteredStudies])
 
@@ -590,7 +593,7 @@ export default function RadiologyReportingView({
     return null
   }, [activeStudy?.umr, activeStudy?.mrn])
 
-  // Authorized Radiologist verification
+  // Authorized Radiologist & Reporting Staff verification
   const isAuthorizedRadiologist = useMemo(() => {
     const allowed = [
       "radiologist",
@@ -601,6 +604,12 @@ export default function RadiologyReportingView({
       "hod",
       "head of department",
       "chief",
+      "technician",
+      "technologist",
+      "radiographer",
+      "tech",
+      "staff",
+      "operator",
     ]
     const roleLower = (currentRole || "").toLowerCase()
     return allowed.some((r) => roleLower.includes(r))
@@ -1104,17 +1113,23 @@ const templateContentCache = new Map<string, any>()
     }
   }
 
-  // Finalize Report (Permission-Gated)
+  // Finalize Report (Permission-Gated & Idempotent)
   const handleFinalizeReport = () => {
+    if (isFinalizing) return
     if (!activeStudy) return
-    if (activeStudy.normalizedReportStatus === "Finalized") {
+    if (
+      activeStudy.normalizedReportStatus === "Finalized" ||
+      activeStudy.reportStatus === "Finalized" ||
+      activeStudy.reportStatus === "Final" ||
+      (activeStudy as any).workflowStatus === "FINALIZED"
+    ) {
       showToast("Report is already finalized.", "info")
       return
     }
 
     if (!isAuthorizedRadiologist) {
       showToast(
-        `Unauthorized: User role "${currentRole}" cannot finalize reports. Only credentialed Radiologists or Doctors can finalize diagnostic reports.`,
+        `Unauthorized: User role "${currentRole}" cannot finalize reports. Only credentialed Radiologists, Physicians, or Imaging Technologists can finalize diagnostic reports.`,
         "error"
       )
       return
@@ -1142,26 +1157,36 @@ const templateContentCache = new Map<string, any>()
       })
     }
 
+    const freeTextFindings = reportForm.findingsText
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+
     const findingsArr =
       findingsFromSections.length > 0
-        ? findingsFromSections
-        : reportForm.findingsText
-            .split("\n")
-            .map((l) => l.trim())
-            .filter(Boolean)
+        ? Array.from(new Set([...findingsFromSections, ...freeTextFindings]))
+        : freeTextFindings
+
+    const freeTextImpression = reportForm.impressionText
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
 
     const impressionArr = impressionFromSections
-      ? impressionFromSections.split("\n").map((l) => l.trim()).filter(Boolean)
-      : reportForm.impressionText
-          .split("\n")
-          .map((l) => l.trim())
-          .filter(Boolean)
+      ? Array.from(new Set([impressionFromSections, ...freeTextImpression]))
+      : freeTextImpression
 
-    if (findingsArr.length === 0 || impressionArr.length === 0) {
-      showToast("Both clinical findings and diagnostic impression are required to finalize.", "error")
+    if (findingsArr.length === 0) {
+      showToast("Validation Error: Please enter clinical findings before finalizing the report.", "error")
       return
     }
 
+    const finalImpression =
+      impressionArr.length > 0
+        ? impressionArr
+        : ["Diagnostic imaging examination completed per clinical protocol. Findings as documented above."]
+
+    setIsFinalizing(true)
     try {
       RadiologyWorkflowDb.finalizeReport(
         activeStudy.id,
@@ -1169,7 +1194,7 @@ const templateContentCache = new Map<string, any>()
           indication: reportForm.indication,
           technique: reportForm.technique,
           findings: findingsArr,
-          impression: impressionArr,
+          impression: finalImpression,
           comparison: reportForm.comparison,
           finalizedBy: currentTechnician,
           finalizedRole: currentRole,
@@ -1199,6 +1224,9 @@ const templateContentCache = new Map<string, any>()
         fieldValues: reportForm.sectionValues,
         technicianNotes: reportForm.technique,
         radiologistName: currentTechnician,
+        findings: findingsArr,
+        impression: finalImpression,
+        role: currentRole,
       })
 
       lastSavedSnapshotRef.current = JSON.stringify(reportForm)
@@ -1214,6 +1242,8 @@ const templateContentCache = new Map<string, any>()
       }
     } catch (err: any) {
       showToast(err.message || "Failed to finalize report", "error")
+    } finally {
+      setIsFinalizing(false)
     }
   }
 
@@ -2823,21 +2853,26 @@ const templateContentCache = new Map<string, any>()
                           {isAuthorizedRadiologist ? (
                             <button
                               type="button"
+                              disabled={isFinalizing}
                               onClick={handleFinalizeReport}
-                              className="w-full px-2 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md font-bold text-[11px] flex items-center justify-center gap-1 cursor-pointer shadow-2xs transition-colors"
+                              className={`w-full px-2 py-1.5 ${
+                                isFinalizing
+                                  ? "bg-emerald-800 opacity-70 cursor-not-allowed"
+                                  : "bg-emerald-600 hover:bg-emerald-700 cursor-pointer"
+                              } text-white rounded-md font-bold text-[11px] flex items-center justify-center gap-1 shadow-2xs transition-colors`}
                             >
                               <ShieldCheck className="w-3.5 h-3.5 stroke-[2.2] shrink-0" />
-                              <span className="truncate">Finalize Report</span>
+                              <span className="truncate">{isFinalizing ? "Finalizing..." : "Finalize Report"}</span>
                             </button>
                           ) : (
                             <button
                               type="button"
                               disabled
-                              title="Only authorized Radiologists or Doctors can finalize diagnostic reports"
+                              title="Only authorized clinical personnel can finalize diagnostic reports"
                               className="w-full px-1.5 py-1.5 bg-slate-100 border border-slate-200 text-slate-400 rounded-md font-semibold text-[10.5px] flex items-center justify-center gap-1 cursor-not-allowed"
                             >
                               <Lock className="w-3 h-3 text-slate-400 shrink-0" />
-                              <span className="truncate">Finalize (Radiologist)</span>
+                              <span className="truncate">Finalize (Authorized Staff)</span>
                             </button>
                           )}
                         </div>

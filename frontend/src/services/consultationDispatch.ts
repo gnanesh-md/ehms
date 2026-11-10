@@ -281,7 +281,7 @@ export function dispatchConsultation(
             age: encounter.age,
             gender: encounter.sex,
             opNumber: encounter.opNumber,
-            mrn: encounter.umr.replace(/\D/g, "") || "10001",
+            mrn: encounter.umr,
             umr: encounter.umr,
             encounterId: encounter.id,
             department: encounter.dept || doctor.specialty,

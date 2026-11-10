@@ -435,17 +435,19 @@ export default function RadiologyOperationsView({
     })
   }, [studies, statusTab, modalityFilter, suiteFilter, paymentFilter, searchQuery])
 
-  // Order: Newest examination appears at the top.
-  // Sorted strictly by scanning eligibility timestamp (billingClearedAt / eligibleAt / paidAt) descending.
-  // Stable secondary sort: Examination ID descending.
+  // Predefined Standardized Sorting: Strict First-In, First-Out (FIFO) Scanning Operations.
+  // Display examinations in OLDEST TO NEWEST order (ascending).
+  // The oldest eligible examination must always appear first.
+  // Sorted strictly by original examination/order creation timestamp ascending.
+  // Stable secondary sort key: Examination ID ascending.
   const sortedStudies = useMemo(() => {
     return [...filteredStudies].sort((a, b) => {
       const timeA = RadiologyWorkflowDb.getScanningEligibilityTimestamp(a)
       const timeB = RadiologyWorkflowDb.getScanningEligibilityTimestamp(b)
       if (timeA !== timeB) {
-        return timeB - timeA // Newest first
+        return timeA - timeB // Oldest eligible examinations first (FIFO)
       }
-      return (b.id || "").localeCompare(a.id || "")
+      return (a.id || "").localeCompare(b.id || "")
     })
   }, [filteredStudies])
 

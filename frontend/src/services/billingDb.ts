@@ -697,6 +697,46 @@ export const INITIAL_LAB_ORDERS: LabOrderRecord[] = []
 
 export const INITIAL_RAD_STUDIES: RadiologyStudyRecord[] = []
 
+export function normalizeUmr(umr?: string): string {
+  if (!umr) return ""
+  const str = String(umr).trim().toUpperCase()
+  return str.replace(/^(UMR|PAT|MRN|PATIENT|P)[-_]?/, "") || str
+}
+
+export function cleanEnc(val?: string): string {
+  if (!val) return ""
+  const stripped = String(val).trim().toLowerCase().replace(/^(op|enc|visit|v|ip|adm|clm)[-_]?/, "")
+  const withoutZeros = stripped.replace(/^0+/, "")
+  return withoutZeros || stripped
+}
+
+export function matchesEncounter(
+  item: { encounterId?: string; opNumber?: string; umr?: string; mrn?: string },
+  enc: { id: string; opNumber?: string; umr?: string }
+): boolean {
+  const itemUmr = normalizeUmr(item.umr || item.mrn)
+  const encUmr = normalizeUmr(enc.umr)
+  if (itemUmr && encUmr && itemUmr !== encUmr) {
+    return false
+  }
+  const itemEnc = cleanEnc(item.encounterId)
+  const itemOp = cleanEnc(item.opNumber)
+  const encId = cleanEnc(enc.id)
+  const encOp = cleanEnc(enc.opNumber)
+
+  if (item.encounterId && enc.id && item.encounterId.toLowerCase() === enc.id.toLowerCase()) return true
+  if (item.encounterId && enc.opNumber && item.encounterId.toLowerCase() === enc.opNumber.toLowerCase()) return true
+  if (item.opNumber && enc.opNumber && item.opNumber.toLowerCase() === enc.opNumber.toLowerCase()) return true
+  if (item.opNumber && enc.id && item.opNumber.toLowerCase() === enc.id.toLowerCase()) return true
+  if (itemEnc && encId && itemEnc === encId) return true
+  if (itemEnc && encOp && itemEnc === encOp) return true
+  if (itemOp && encOp && itemOp === encOp) return true
+  if (itemUmr && encUmr && itemUmr === encUmr && !item.encounterId && !item.opNumber) {
+    return true
+  }
+  return false
+}
+
 // ── Department Tariff & Service Catalogs (Streamlined Small Amounts) ──────────
 
 export const DEPARTMENT_TARIFF_CATALOG: Record<DepartmentType, {
@@ -1111,14 +1151,6 @@ export class BillingDatabase {
   static invalidateRadiologyStudiesCache(): void {
     this._cachedRadStudies = null
     this._radStudiesCacheTime = 0
-    if (typeof window !== "undefined") {
-      try {
-        window.dispatchEvent(new CustomEvent("hospai_rad_workflow_updated"))
-      } catch {}
-      try {
-        window.dispatchEvent(new CustomEvent(BILLING_UPDATE_EVENT))
-      } catch {}
-    }
   }
 
   private static load<T,>(key: string, fallback: T): T {
@@ -1409,195 +1441,135 @@ export class BillingDatabase {
     // Auto-sync OP Encounters and consolidate with Laboratory & Radiology investigations
     const derivedOp = new Set<string>()
     try {
-      const opEncs = db.getEncounters();
+      const opEncs = db.getEncounters()
       const rawLab = typeof window !== "undefined" ? window.localStorage.getItem("hospai_lab_orders_v2") : null
       const allLabOrders: any[] = rawLab ? JSON.parse(rawLab) : []
       const rawRad = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY_RAD_STUDIES) : null
       const allRadStudies: any[] = rawRad ? JSON.parse(rawRad) : []
 
-      // Track all encounter IDs that have active OP claims
+      // Track all encounter IDs and items that have been consolidated
       const consolidatedEncounterIds = new Set<string>()
+      const consolidatedLabOrderIds = new Set<string>()
+      const consolidatedRadStudyIds = new Set<string>()
 
       opEncs.forEach((enc) => {
-        consolidatedEncounterIds.add(enc.id.toLowerCase())
         const claimId = `CLM-${enc.id}`
-        const existingClaimIdx = claims.findIndex(
-          (c) => c.id === claimId || (c.encounterId && c.encounterId.toLowerCase() === enc.id.toLowerCase())
-        )
-
-        const regFee = enc.billing?.registrationFee ?? (enc.isNew === false ? 0 : 20)
-        const consultFee = enc.billing?.consultationFee ?? getDoctorConsultationFee(enc.assignedDoctor)
+        const encOp = enc.opNumber || `OP-${enc.umr.replace(/\D/g, "") || "1001"}`
+        const invoiceNo = `INV-${encOp}`
 
         // Find associated Lab Orders
-        const matchingLabOrders = allLabOrders.filter(
-          (o) => o.encounterId && o.encounterId.toLowerCase() === enc.id.toLowerCase()
-        )
+        const matchingLabOrders = allLabOrders.filter((o) => matchesEncounter(o, enc))
         // Find associated Radiology Studies
-        const matchingRadStudies = allRadStudies.filter(
-          (s) => s.encounterId && s.encounterId.toLowerCase() === enc.id.toLowerCase()
-        )
+        const matchingRadStudies = allRadStudies.filter((s) => matchesEncounter(s, enc))
 
-        let items: InvoiceItem[] = []
+        const hasInvestigations = matchingLabOrders.length > 0 || matchingRadStudies.length > 0
 
-        if (existingClaimIdx >= 0) {
-          const existing = claims[existingClaimIdx]
-          // Retain existing items, but filter out generic diagnostic placeholder
-          items = (existing.items || []).filter(
-            (it) => it.id !== `ITEM-LAB-${enc.id}` && it.description !== "Diagnostic Investigations & Services"
-          )
-        } else {
-          if (regFee > 0) {
-            items.push({
-              id: `ITEM-REG-${enc.id}`,
-              description: `Patient Registration Fee – ₹${regFee}`,
-              category: "Registration" as any,
-              cptCode: "99201",
-              quantity: 1,
-              unitPrice: regFee,
-              total: regFee,
-              insuranceCovered: 0,
-              patientPayable: regFee,
-              orderedBy: "Front Desk Registration",
-              orderedAt: enc.registrationTime,
-            })
+        if (hasInvestigations) {
+          consolidatedEncounterIds.add(enc.id.toLowerCase())
+          if (enc.opNumber) consolidatedEncounterIds.add(enc.opNumber.toLowerCase())
+          matchingLabOrders.forEach((o) => { if (o.id) consolidatedLabOrderIds.add(String(o.id)) })
+          matchingRadStudies.forEach((s) => { if (s.id) consolidatedRadStudyIds.add(String(s.id)) })
+
+          const cleanId = cleanEnc(enc.id)
+          const cleanOp = cleanEnc(enc.opNumber)
+          const normUmr = normalizeUmr(enc.umr)
+
+          const existingClaimIdx = claims.findIndex((c) => {
+            if (c.id === claimId || c.invoiceNo === invoiceNo) return true
+            if (enc.opNumber && c.id === `CLM-${enc.opNumber}`) return true
+            const cEnc = cleanEnc(c.encounterId)
+            if (cEnc && (cEnc === cleanId || (cleanOp && cEnc === cleanOp))) return true
+            const cUmr = normalizeUmr(c.patientId || c.mrn)
+            if (cUmr && normUmr && cUmr === normUmr) {
+              if (c.encounterId && (c.encounterId.toLowerCase() === enc.id.toLowerCase() || (enc.opNumber && c.encounterId.toLowerCase() === enc.opNumber.toLowerCase()))) return true
+              if (c.id === `CLM-${enc.id}` || (enc.opNumber && c.id === `CLM-${enc.opNumber}`)) return true
+            }
+            return false
+          })
+
+          let items: InvoiceItem[] = []
+          if (existingClaimIdx >= 0) {
+            const existing = claims[existingClaimIdx]
+            // Retain existing items (e.g. bedside services), strictly remove Registration fee & generic placeholders
+            items = (existing.items || []).filter(
+              (it) => it.category !== "Registration" && !it.id.startsWith("ITEM-REG-") && it.id !== `ITEM-LAB-${enc.id}` && it.description !== "Diagnostic Investigations & Services"
+            )
           }
 
-          items.push({
-            id: `ITEM-CONSULT-${enc.id}`,
-            description: `Physician Consultation Fee (${enc.assignedDoctor || enc.dept || "Attending Specialist"})`,
-            category: "Consultation",
-            cptCode: "99205",
-            quantity: 1,
-            unitPrice: consultFee,
-            total: consultFee,
-            insuranceCovered: 0,
-            patientPayable: consultFee,
-            orderedBy: enc.assignedDoctor || "OP Physician",
-            orderedAt: enc.registrationTime,
+          // Merge Laboratory items
+          matchingLabOrders.forEach((ord: any) => {
+            (ord.tests || []).forEach((t: any, i: number) => {
+              const itemId = `ITEM-LAB-${ord.id}-${i + 1}`
+              const exists = items.some(
+                (it) => it.id === itemId || (it.category === "Laboratory" && it.description.toLowerCase().trim() === (t.name || "").toLowerCase().trim())
+              )
+              if (!exists) {
+                items.push({
+                  id: itemId,
+                  description: t.name,
+                  category: "Laboratory",
+                  cptCode: t.code || "80050",
+                  quantity: 1,
+                  unitPrice: t.price || 0,
+                  total: t.price || 0,
+                  insuranceCovered: 0,
+                  patientPayable: t.price || 0,
+                  orderedBy: ord.doctorName || enc.assignedDoctor || "Attending Doctor",
+                  orderedAt: ord.createdAt || new Date().toISOString(),
+                })
+              }
+            })
           })
-        }
 
-        // Merge Laboratory items
-        matchingLabOrders.forEach((ord: any) => {
-          (ord.tests || []).forEach((t: any, i: number) => {
-            const itemId = `ITEM-LAB-${ord.id}-${i + 1}`
+          // Merge Radiology items
+          matchingRadStudies.forEach((rs: any) => {
+            const itemId = `ITEM-RAD-${rs.id}`
             const exists = items.some(
-              (it) => it.id === itemId || (it.category === "Laboratory" && it.description.toLowerCase() === (t.name || "").toLowerCase())
+              (it) =>
+                it.id === itemId ||
+                (((it.category as string) === "Radiology / Imaging" || (it.category as string) === "Radiology") &&
+                  (it.description.toLowerCase().trim() === `${rs.study} (${rs.modality})`.toLowerCase().trim() ||
+                   it.description.toLowerCase().trim() === (rs.study || "").toLowerCase().trim()))
             )
             if (!exists) {
               items.push({
                 id: itemId,
-                description: t.name,
-                category: "Laboratory",
-                cptCode: "80050",
+                description: `${rs.study} (${rs.modality})`,
+                category: "Radiology / Imaging",
+                cptCode: `RAD-${rs.modality || "IMG"}`,
                 quantity: 1,
-                unitPrice: t.price || 0,
-                total: t.price || 0,
+                unitPrice: rs.price || 0,
+                total: rs.price || 0,
                 insuranceCovered: 0,
-                patientPayable: t.price || 0,
-                orderedBy: ord.doctorName || enc.assignedDoctor || "Attending Doctor",
-                orderedAt: ord.createdAt || new Date().toISOString(),
+                patientPayable: rs.price || 0,
+                orderedBy: rs.provider || enc.assignedDoctor || "Attending Doctor",
+                orderedAt: rs.createdAt || rs.orderedAt || new Date().toISOString(),
               })
             }
           })
-        })
 
-        // Merge Radiology items
-        matchingRadStudies.forEach((rs: any) => {
-          const itemId = `ITEM-RAD-${rs.id}`
-          const exists = items.some(
-            (it) =>
-              it.id === itemId ||
-              (((it.category as string) === "Radiology / Imaging" || (it.category as string) === "Radiology") &&
-                it.description.toLowerCase().includes((rs.study || "").toLowerCase()))
-          )
-          if (!exists) {
-            items.push({
-              id: itemId,
-              description: `${rs.study} (${rs.modality})`,
-              category: "Radiology / Imaging",
-              cptCode: `RAD-${rs.modality || "IMG"}`,
-              quantity: 1,
-              unitPrice: rs.price || 0,
-              total: rs.price || 0,
-              insuranceCovered: 0,
-              patientPayable: rs.price || 0,
-              orderedBy: rs.provider || enc.assignedDoctor || "Attending Doctor",
-              orderedAt: rs.createdAt || new Date().toISOString(),
-            })
-          }
-        })
+          // Ensure NO registration fee in investigation billing
+          items = items.filter((it) => it.category !== "Registration" && !it.id.startsWith("ITEM-REG-"))
 
-        // If no explicit lab/rad items exist, but enc.billing?.labFee > 0, preserve generic line
-        const hasSpecificDiag = items.some((it) => it.category === "Laboratory" || (it.category as string) === "Radiology / Imaging")
-        if (!hasSpecificDiag && (enc.billing?.labFee || 0) > 0) {
-          items.push({
-            id: `ITEM-LAB-${enc.id}`,
-            description: "Diagnostic Investigations & Services",
-            category: "Laboratory",
-            cptCode: "80050",
-            quantity: 1,
-            unitPrice: enc.billing.labFee,
-            total: enc.billing.labFee,
-            insuranceCovered: 0,
-            patientPayable: enc.billing.labFee,
-            orderedBy: enc.assignedDoctor || "OP Physician",
-          })
-        }
+          const subtotal = items.reduce((s, it) => s + (it.total || 0), 0)
+          const existingClaim = existingClaimIdx >= 0 ? claims[existingClaimIdx] : null
+          const recordedPayments = (existingClaim?.payments || []).reduce((sum, p) => sum + (p.amount || 0), 0)
 
-        const subtotal = items.reduce((s, it) => s + (it.total || 0), 0)
+          const isLabPaid = matchingLabOrders.length === 0 || matchingLabOrders.every((o) => o.billing?.status === "Paid")
+          const isRadPaid = matchingRadStudies.length === 0 || matchingRadStudies.every((s) => s.isPaid || s.paymentStatus === "Paid")
+          const allInvestigationsPaidInStore = isLabPaid && isRadPaid && (matchingLabOrders.length + matchingRadStudies.length > 0)
 
-        // Separate component categories so an OP registration fee never marks newly added investigations as paid
-        const regConsultItems = items.filter((it) => it.category === "Registration" || it.category === "Consultation")
-        const regConsultTotal = regConsultItems.reduce((sum, it) => sum + (it.total || 0), 0)
-        const labItems = items.filter((it) => it.category === "Laboratory")
-        const labTotal = labItems.reduce((sum, it) => sum + (it.total || 0), 0)
-        const radItems = items.filter((it) => (it.category as string) === "Radiology / Imaging" || (it.category as string) === "Radiology")
-        const radTotal = radItems.reduce((sum, it) => sum + (it.total || 0), 0)
+          const isFullyPaid = allInvestigationsPaidInStore || (recordedPayments >= subtotal && subtotal > 0)
+          const amountPaid = isFullyPaid
+            ? subtotal
+            : Math.min(subtotal, Math.max(existingClaim?.amountPaid || 0, recordedPayments))
+          const balanceDue = isFullyPaid ? 0 : Math.max(0, subtotal - amountPaid)
 
-        // Check registration payment at front desk
-        const isRegPaid = enc.billing?.status === "Paid"
+          const hasLab = items.some((it) => it.category === "Laboratory")
+          const hasRad = items.some((it) => (it.category as string) === "Radiology / Imaging" || (it.category as string) === "Radiology")
+          const department: DepartmentType = (hasLab && hasRad) ? "Outpatient" : hasLab ? "Laboratory" : hasRad ? "Radiology" : "Outpatient"
+          const carePathway = (hasLab && hasRad) ? "Laboratory & Radiology Investigations" : hasLab ? "Laboratory Diagnostics" : hasRad ? "Radiology Imaging" : `${enc.dept} Consultation (${encOp})`
 
-        // Laboratory investigations are paid ONLY if all matching lab orders are billed/paid
-        const isLabPaid = labItems.length === 0 || (matchingLabOrders.length > 0 && matchingLabOrders.every((o) => o.billing?.status === "Paid"))
-
-        // Radiology investigations are paid ONLY if all matching radiology studies are cleared/paid
-        const isRadPaid = radItems.length === 0 || (matchingRadStudies.length > 0 && matchingRadStudies.every((s) => s.isPaid || s.paymentStatus === "Paid"))
-
-        if (existingClaimIdx >= 0) {
-          const existing = claims[existingClaimIdx]
-          const recordedPayments = (existing.payments || []).reduce((sum, p) => sum + (p.amount || 0), 0)
-
-          let calculatedPaid = recordedPayments
-          if (calculatedPaid === 0) {
-            if (isRegPaid) calculatedPaid += regConsultTotal
-            if (isLabPaid && labTotal > 0) calculatedPaid += labTotal
-            if (isRadPaid && radTotal > 0) calculatedPaid += radTotal
-          } else {
-            if (isRegPaid && calculatedPaid < regConsultTotal) calculatedPaid = Math.max(calculatedPaid, regConsultTotal)
-            if (isLabPaid && labTotal > 0 && !existing.payments?.some((p) => (p as any).department === "Laboratory")) {
-              calculatedPaid += labTotal
-            }
-            if (isRadPaid && radTotal > 0 && !existing.payments?.some((p) => (p as any).department === "Radiology")) {
-              calculatedPaid += radTotal
-            }
-          }
-
-          const amountPaid = Math.min(subtotal, Math.max(existing.amountPaid || 0, calculatedPaid))
-          const balanceDue = Math.max(0, subtotal - amountPaid)
-          const isFullyPaid = balanceDue === 0 && isRegPaid && isLabPaid && isRadPaid && subtotal > 0
-
-          claims[existingClaimIdx] = {
-            ...existing,
-            items,
-            subtotal,
-            totalAmount: subtotal,
-            patientPortion: subtotal,
-            amountPaid,
-            balanceDue,
-            status: isFullyPaid ? "Paid" : "Draft",
-          }
-        } else {
           const visitIso = (() => {
             try {
               return encounterArrivalIso(enc)
@@ -1608,28 +1580,136 @@ export class BillingDatabase {
           const visitAt = visitIso && !Number.isNaN(new Date(visitIso).getTime()) ? new Date(visitIso).toISOString() : new Date().toISOString()
           derivedOp.add(claimId)
 
-          let calculatedPaid = 0
-          if (isRegPaid) calculatedPaid += regConsultTotal
-          if (isLabPaid && labTotal > 0) calculatedPaid += labTotal
-          if (isRadPaid && radTotal > 0) calculatedPaid += radTotal
-
-          const amountPaid = Math.min(subtotal, calculatedPaid)
-          const balanceDue = Math.max(0, subtotal - amountPaid)
-          const isFullyPaid = balanceDue === 0 && isRegPaid && isLabPaid && isRadPaid && subtotal > 0
-
-          claims.push({
+          const claimRecord: ClaimRecord = {
+            ...(existingClaim || {}),
             id: claimId,
-            invoiceNo: `INV-${enc.opNumber}`,
+            invoiceNo,
             encounterId: enc.id,
             patientId: enc.umr,
             patientName: enc.patientName,
             mrn: enc.umr.replace("UMR", ""),
-            age: enc.age,
+            age: enc.age || 30,
             gender: enc.sex === "Female" ? "Female" : "Male",
-            phone: enc.phone,
-            payments: [],
+            phone: enc.phone || "",
+            payments: existingClaim?.payments || [],
+            department,
+            carePathway,
+            dateOfService: OpReportsService.getEncounterDate(enc) || (enc as any).createdAt?.split("T")[0] || visitAt.split("T")[0],
+            insuranceProvider: existingClaim?.insuranceProvider || "Self-Pay",
+            policyNumber: existingClaim?.policyNumber || "N/A",
+            status: isFullyPaid ? "Paid" : "Draft",
+            attendingDoctor: enc.assignedDoctor || "Attending Doctor",
+            diagnosisCodes: [enc.icd10 || enc.diagnosis || "Z01.89"],
+            items,
+            subtotal,
+            discount: 0,
+            tax: 0,
+            totalAmount: subtotal,
+            insurancePortion: 0,
+            patientPortion: subtotal,
+            amountPaid,
+            balanceDue,
+            createdAt: existingClaim?.createdAt || visitAt,
+            updatedAt: new Date().toISOString(),
+          }
+
+          if (existingClaimIdx >= 0) {
+            claims[existingClaimIdx] = claimRecord
+          } else {
+            claims.push(claimRecord)
+          }
+        } else {
+          // No investigations: standard Outpatient consultation claim
+          consolidatedEncounterIds.add(enc.id.toLowerCase())
+          if (enc.opNumber) consolidatedEncounterIds.add(enc.opNumber.toLowerCase())
+          const cleanId = cleanEnc(enc.id)
+          const cleanOp = cleanEnc(enc.opNumber)
+          const normUmr = normalizeUmr(enc.umr)
+
+          const existingClaimIdx = claims.findIndex((c) => {
+            if (c.id === claimId || c.invoiceNo === invoiceNo) return true
+            if (enc.opNumber && c.id === `CLM-${enc.opNumber}`) return true
+            const cEnc = cleanEnc(c.encounterId)
+            if (cEnc && (cEnc === cleanId || (cleanOp && cEnc === cleanOp))) return true
+            const cUmr = normalizeUmr(c.patientId || c.mrn)
+            if (cUmr && normUmr && cUmr === normUmr) {
+              if (c.encounterId && (c.encounterId.toLowerCase() === enc.id.toLowerCase() || (enc.opNumber && c.encounterId.toLowerCase() === enc.opNumber.toLowerCase()))) return true
+              if (c.id === `CLM-${enc.id}` || (enc.opNumber && c.id === `CLM-${enc.opNumber}`)) return true
+            }
+            return false
+          })
+          const regFee = enc.billing?.registrationFee ?? (enc.isNew === false ? 0 : 20)
+          const consultFee = enc.billing?.consultationFee ?? getDoctorConsultationFee(enc.assignedDoctor)
+
+          let items: InvoiceItem[] = []
+          if (existingClaimIdx >= 0) {
+            items = claims[existingClaimIdx].items || []
+          } else {
+            if (regFee > 0) {
+              items.push({
+                id: `ITEM-REG-${enc.id}`,
+                description: `Patient Registration Fee – ₹${regFee}`,
+                category: "Registration" as any,
+                cptCode: "99201",
+                quantity: 1,
+                unitPrice: regFee,
+                total: regFee,
+                insuranceCovered: 0,
+                patientPayable: regFee,
+                orderedBy: "Front Desk Registration",
+                orderedAt: enc.registrationTime,
+              })
+            }
+            items.push({
+              id: `ITEM-CONSULT-${enc.id}`,
+              description: `Physician Consultation Fee (${enc.assignedDoctor || enc.dept || "Attending Specialist"})`,
+              category: "Consultation",
+              cptCode: "99205",
+              quantity: 1,
+              unitPrice: consultFee,
+              total: consultFee,
+              insuranceCovered: 0,
+              patientPayable: consultFee,
+              orderedBy: enc.assignedDoctor || "OP Physician",
+              orderedAt: enc.registrationTime,
+            })
+          }
+
+          const subtotal = items.reduce((s, it) => s + (it.total || 0), 0)
+          const isRegPaid = enc.billing?.status === "Paid"
+          const existing = existingClaimIdx >= 0 ? claims[existingClaimIdx] : null
+          const recordedPayments = (existing?.payments || []).reduce((sum, p) => sum + (p.amount || 0), 0)
+          const wasFullySettled = existing?.status === "Paid" || (existing !== null && (existing.balanceDue || 0) <= 0 && (existing.amountPaid || 0) > 0)
+          const amountPaid = wasFullySettled
+            ? subtotal
+            : Math.min(subtotal, Math.max(existing?.amountPaid || 0, recordedPayments || (isRegPaid ? subtotal : 0)))
+          const balanceDue = wasFullySettled ? 0 : Math.max(0, subtotal - amountPaid)
+          const isFullyPaid = balanceDue === 0 && subtotal > 0
+
+          const visitIso = (() => {
+            try {
+              return encounterArrivalIso(enc)
+            } catch {
+              return ""
+            }
+          })()
+          const visitAt = visitIso && !Number.isNaN(new Date(visitIso).getTime()) ? new Date(visitIso).toISOString() : new Date().toISOString()
+          derivedOp.add(claimId)
+
+          const opClaim: ClaimRecord = {
+            ...(existing || {}),
+            id: claimId,
+            invoiceNo,
+            encounterId: enc.id,
+            patientId: enc.umr,
+            patientName: enc.patientName,
+            mrn: enc.umr.replace("UMR", ""),
+            age: enc.age || 30,
+            gender: enc.sex === "Female" ? "Female" : "Male",
+            phone: enc.phone || "",
+            payments: existing?.payments || [],
             department: "Outpatient",
-            carePathway: `${enc.dept} Consultation (${enc.opNumber})`,
+            carePathway: `${enc.dept} Consultation (${encOp})`,
             dateOfService: OpReportsService.getEncounterDate(enc) || (enc as any).createdAt?.split("T")[0] || visitAt.split("T")[0],
             insuranceProvider: "Self-Pay",
             policyNumber: "N/A",
@@ -1645,130 +1725,202 @@ export class BillingDatabase {
             patientPortion: subtotal,
             amountPaid,
             balanceDue,
-            createdAt: visitAt,
+            createdAt: existing?.createdAt || visitAt,
             updatedAt: visitAt,
-          })
+          }
+
+          if (existingClaimIdx >= 0) {
+            claims[existingClaimIdx] = opClaim
+          } else {
+            claims.push(opClaim)
+          }
         }
       })
 
-      // Auto-sync standalone Lab Orders (without an OP encounter)
+      // Consolidated Standalone Investigations (Laboratory + Radiology without matching OP encounter)
+      // Group unmerged lab orders and radiology studies by (patientKey, encounterKey)
+      const unmergedGroups = new Map<string, { labOrders: any[]; radStudies: any[]; patient: any }>()
+
       allLabOrders.forEach((ord: any) => {
+        if (consolidatedLabOrderIds.has(String(ord.id))) return
         const encId = (ord.encounterId || "").toLowerCase()
-        if (encId && consolidatedEncounterIds.has(encId)) {
-          // Already consolidated into encounter invoice
-          return
-        }
-        const claimId = `CLM-LAB-${ord.id}`
-        const exists = claims.some((c) => c.id === claimId || c.invoiceNo === ord.billing?.invoiceNo)
-        if (!exists) {
-          const isPaid = ord.billing?.status === "Paid"
-          const subtotal = ord.billing?.total || (ord.tests || []).reduce((s: number, t: any) => s + (t.price || 0), 0)
-          const labItems: InvoiceItem[] = (ord.tests || []).map((t: any, i: number) => ({
-            id: `ITEM-LAB-${ord.id}-${i + 1}`,
-            description: t.name,
-            category: "Laboratory",
-            cptCode: "80050",
-            quantity: 1,
-            unitPrice: t.price || 0,
-            total: t.price || 0,
-            insuranceCovered: 0,
-            patientPayable: t.price || 0,
-            orderedBy: ord.doctorName || "Attending Doctor",
-            orderedAt: ord.createdAt || new Date().toISOString(),
-          }))
+        const opId = (ord.opNumber || "").toLowerCase()
+        if ((encId && consolidatedEncounterIds.has(encId)) || (opId && consolidatedEncounterIds.has(opId))) return
+        const patientKey = normalizeUmr(ord.umr) || (ord.patientName || "").trim().toLowerCase() || "PAT"
+        const encKey = (ord.encounterId || ord.opNumber || "STANDALONE").trim().toLowerCase().replace(/^op[-_]?/, "")
+        const groupKey = `${patientKey}|${encKey}`
 
-          claims.push({
-            id: claimId,
-            invoiceNo: ord.billing?.invoiceNo || `INV-LAB-${(ord.id || "").replace(/\D/g, "") || Date.now().toString().slice(-4)}`,
-            encounterId: ord.encounterId,
-            patientId: ord.umr,
-            patientName: ord.patientName,
-            mrn: (ord.umr || "").replace("UMR", ""),
-            age: ord.age || 30,
-            gender: ord.sex === "Female" ? "Female" : "Male",
-            phone: ord.phone || "",
-            payments: [],
-            department: "Laboratory",
-            carePathway: `Laboratory Diagnostics (${ord.id})`,
-            dateOfService: ord.createdAt ? ord.createdAt.split("T")[0] : new Date().toISOString().split("T")[0],
-            insuranceProvider: "Self-Pay",
-            policyNumber: "N/A",
-            status: isPaid ? "Paid" : "Draft",
-            attendingDoctor: ord.doctorName || "Attending Specialist",
-            diagnosisCodes: [ord.diagnosis || "Z00.00"],
-            items: labItems,
-            subtotal,
-            discount: 0,
-            tax: 0,
-            totalAmount: subtotal,
-            insurancePortion: 0,
-            patientPortion: subtotal,
-            amountPaid: isPaid ? subtotal : 0,
-            balanceDue: isPaid ? 0 : subtotal,
-            createdAt: ord.createdAt || new Date().toISOString(),
-            updatedAt: ord.updatedAt || ord.createdAt || new Date().toISOString(),
+        const group = unmergedGroups.get(groupKey) || { labOrders: [], radStudies: [], patient: ord }
+        group.labOrders.push(ord)
+        unmergedGroups.set(groupKey, group)
+      })
+
+      allRadStudies.forEach((rs: any) => {
+        if (consolidatedRadStudyIds.has(String(rs.id))) return
+        const encId = (rs.encounterId || "").toLowerCase()
+        const opId = ((rs as any).opNumber || "").toLowerCase()
+        if ((encId && consolidatedEncounterIds.has(encId)) || (opId && consolidatedEncounterIds.has(opId))) return
+        const patientKey = normalizeUmr(rs.umr || rs.mrn) || (rs.patient || "").trim().toLowerCase() || "PAT"
+        const encKey = (rs.encounterId || (rs as any).opNumber || "STANDALONE").trim().toLowerCase().replace(/^op[-_]?/, "")
+        const groupKey = `${patientKey}|${encKey}`
+
+        const group = unmergedGroups.get(groupKey) || { labOrders: [], radStudies: [], patient: rs }
+        group.radStudies.push(rs)
+        unmergedGroups.set(groupKey, group)
+      })
+
+      // Process each standalone consolidated group -> EXACTLY ONE billing entry
+      unmergedGroups.forEach((group) => {
+        const primary = group.radStudies[0] || group.labOrders[0]
+        const rawEnc = primary.encounterId || primary.opNumber || primary.id
+        const cleanRawEnc = String(rawEnc).replace(/^(RAD|LAB|ORD)[-_]/i, "")
+        const claimId = primary.encounterId ? `CLM-${primary.encounterId}` : `CLM-INV-${cleanRawEnc}`
+        const invoiceNo = primary.invoiceNo && !primary.invoiceNo.startsWith("INV-RAD-")
+          ? primary.invoiceNo
+          : `INV-${primary.opNumber || cleanRawEnc}`
+
+        const existingIdx = claims.findIndex(
+          (c) => c.id === claimId || c.invoiceNo === invoiceNo || (c.encounterId && c.encounterId.toLowerCase() === String(rawEnc).toLowerCase())
+        )
+
+        if (existingIdx >= 0) {
+          const existing = claims[existingIdx]
+          if (
+            existing.department === "Inpatient" ||
+            existing.department === "Emergency" ||
+            existing.department === "ICU" ||
+            existing.department === "Surgery"
+          ) {
+            // Inpatient or emergency claims already manage their own consolidated investigation charges.
+            // Never overwrite an Inpatient admission running bill or emergency invoice with a standalone investigation stub.
+            return
+          }
+        }
+
+        let items: InvoiceItem[] = existingIdx >= 0 ? [...(claims[existingIdx].items || [])] : []
+
+        // Merge Lab items
+        group.labOrders.forEach((ord) => {
+          (ord.tests || []).forEach((t: any, i: number) => {
+            const itemId = `ITEM-LAB-${ord.id}-${i + 1}`
+            const exists = items.some(
+              (it) => it.id === itemId || (it.category === "Laboratory" && it.description.toLowerCase().trim() === (t.name || "").toLowerCase().trim())
+            )
+            if (!exists) {
+              items.push({
+                id: itemId,
+                description: t.name,
+                category: "Laboratory",
+                cptCode: t.code || "80050",
+                quantity: 1,
+                unitPrice: t.price || 0,
+                total: t.price || 0,
+                insuranceCovered: 0,
+                patientPayable: t.price || 0,
+                orderedBy: ord.doctorName || "Attending Doctor",
+                orderedAt: ord.createdAt || new Date().toISOString(),
+              })
+            }
           })
+        })
+
+        // Merge Radiology items
+        group.radStudies.forEach((rs) => {
+          const itemId = `ITEM-RAD-${rs.id}`
+          const exists = items.some(
+            (it) =>
+              it.id === itemId ||
+              (((it.category as string) === "Radiology / Imaging" || (it.category as string) === "Radiology") &&
+                (it.description.toLowerCase().trim() === `${rs.study} (${rs.modality})`.toLowerCase().trim() ||
+                 it.description.toLowerCase().trim() === (rs.study || "").toLowerCase().trim()))
+          )
+          if (!exists) {
+            items.push({
+              id: itemId,
+              description: `${rs.study} (${rs.modality})`,
+              category: "Radiology / Imaging",
+              cptCode: `RAD-${rs.modality || "IMG"}`,
+              quantity: 1,
+              unitPrice: rs.price || 0,
+              total: rs.price || 0,
+              insuranceCovered: 0,
+              patientPayable: rs.price || 0,
+              orderedBy: rs.provider || "Attending Doctor",
+              orderedAt: rs.createdAt || rs.orderedAt || new Date().toISOString(),
+            })
+          }
+        })
+
+        const subtotal = items.reduce((s, it) => s + (it.total || 0), 0)
+        const isLabPaid = group.labOrders.length === 0 || group.labOrders.every((o) => o.billing?.status === "Paid")
+        const isRadPaid = group.radStudies.length === 0 || group.radStudies.every((s) => s.isPaid || s.paymentStatus === "Paid")
+        const existingClaim = existingIdx >= 0 ? claims[existingIdx] : null
+        const wasFullySettled = existingClaim?.status === "Paid" || (existingClaim !== null && (existingClaim.balanceDue || 0) <= 0 && (existingClaim.amountPaid || 0) > 0)
+        const isPaid = wasFullySettled || (isLabPaid && isRadPaid && items.length > 0)
+        const recordedPayments = (existingClaim?.payments || []).reduce((s, p) => s + (p.amount || 0), 0)
+        const amountPaid = isPaid ? subtotal : Math.min(subtotal, Math.max(existingClaim?.amountPaid || 0, recordedPayments))
+        const balanceDue = isPaid ? 0 : Math.max(0, subtotal - amountPaid)
+
+        const hasLab = items.some((it) => it.category === "Laboratory")
+        const hasRad = items.some((it) => (it.category as string) === "Radiology / Imaging" || (it.category as string) === "Radiology")
+        const department: DepartmentType = (hasLab && hasRad) ? "Outpatient" : hasLab ? "Laboratory" : hasRad ? "Radiology" : "Outpatient"
+        const carePathway = (hasLab && hasRad) ? "Laboratory & Radiology Investigations" : hasLab ? `Laboratory Diagnostics (${group.labOrders[0]?.id || "LAB"})` : hasRad ? `Radiology Imaging — ${group.radStudies[0]?.study || "Imaging"}` : "Diagnostic Services"
+
+        const standaloneClaim: ClaimRecord = {
+          ...(existingIdx >= 0 ? claims[existingIdx] : {}),
+          id: claimId,
+          invoiceNo,
+          encounterId: rawEnc,
+          patientId: primary.umr || primary.mrn || "WALK-IN",
+          patientName: primary.patientName || primary.patient || "Patient",
+          mrn: (primary.umr || primary.mrn || "").replace("UMR", ""),
+          age: primary.age || 35,
+          gender: primary.sex === "Female" || primary.gender === "Female" ? "Female" : "Male",
+          phone: primary.phone || "",
+          payments: existingIdx >= 0 ? claims[existingIdx].payments || [] : [],
+          department,
+          carePathway,
+          dateOfService: (primary.orderDate || primary.ordered || primary.createdAt || "").split("T")[0].split(" · ")[0] || new Date().toISOString().split("T")[0],
+          insuranceProvider: "Self-Pay",
+          policyNumber: "N/A",
+          status: isPaid ? "Paid" : "Draft",
+          attendingDoctor: primary.doctorName || primary.provider || "Attending Specialist",
+          diagnosisCodes: [primary.diagnosis || "Z01.89"],
+          items,
+          subtotal,
+          discount: 0,
+          tax: 0,
+          totalAmount: subtotal,
+          insurancePortion: 0,
+          patientPortion: subtotal,
+          amountPaid,
+          balanceDue,
+          createdAt: primary.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+
+        if (existingIdx >= 0) {
+          claims[existingIdx] = standaloneClaim
+        } else {
+          claims.push(standaloneClaim)
         }
       })
 
-      // Auto-sync standalone Radiology Studies (without an OP encounter)
-      allRadStudies.forEach((rs: any) => {
-        const encId = (rs.encounterId || "").toLowerCase()
-        if (encId && consolidatedEncounterIds.has(encId)) {
-          // Already consolidated into encounter invoice
-          return
+      // Strip any split/orphan individual study claims or lab claims that have been consolidated
+      claims = claims.filter((c) => {
+        // Never strip Inpatient, ICU, Emergency, or Surgery bills
+        if (
+          c.department === "Inpatient" ||
+          c.department === "Emergency" ||
+          c.department === "ICU" ||
+          c.department === "Surgery"
+        ) {
+          return true
         }
-        const claimId = `CLM-${rs.id}`
-        const exists = claims.some((c) => c.id === claimId || (rs.invoiceNo && c.invoiceNo === rs.invoiceNo))
-        if (!exists) {
-          const isPaid = rs.isPaid || rs.paymentStatus === "Paid"
-          const price = rs.price || 500
-          claims.push({
-            id: claimId,
-            invoiceNo: rs.invoiceNo || `INV-RAD-${(rs.id || "").replace(/\D/g, "") || Date.now().toString().slice(-4)}`,
-            encounterId: rs.encounterId,
-            patientId: rs.umr || rs.mrn,
-            patientName: rs.patient,
-            mrn: (rs.mrn || rs.umr || "").replace("UMR", ""),
-            age: 35,
-            gender: "Male",
-            phone: "",
-            payments: [],
-            department: "Radiology",
-            carePathway: `Radiology Imaging — ${rs.study}`,
-            dateOfService: (rs.orderDate || rs.ordered || "").split(" · ")[0] || new Date().toISOString().split("T")[0],
-            insuranceProvider: "Self-Pay",
-            policyNumber: "N/A",
-            status: isPaid ? "Paid" : "Draft",
-            attendingDoctor: rs.provider || "Attending Radiologist",
-            diagnosisCodes: [rs.diagnosis || "Z01.89"],
-            items: [
-              {
-                id: `ITEM-RAD-${rs.id}`,
-                description: `${rs.study} (${rs.modality})`,
-                category: "Radiology / Imaging",
-                cptCode: `RAD-${rs.modality || "IMG"}`,
-                quantity: 1,
-                unitPrice: price,
-                total: price,
-                insuranceCovered: 0,
-                patientPayable: price,
-                orderedBy: rs.provider || "Attending Doctor",
-                orderedAt: rs.createdAt || new Date().toISOString(),
-              },
-            ],
-            subtotal: price,
-            discount: 0,
-            tax: 0,
-            totalAmount: price,
-            insurancePortion: 0,
-            patientPortion: price,
-            amountPaid: isPaid ? price : 0,
-            balanceDue: isPaid ? 0 : price,
-            createdAt: rs.createdAt || new Date().toISOString(),
-            updatedAt: rs.createdAt || new Date().toISOString(),
-          })
-        }
+        if (c.id && c.id.startsWith("CLM-RAD-")) return false
+        if (c.id && consolidatedRadStudyIds.has(c.id.replace("CLM-", ""))) return false
+        if (c.id && consolidatedLabOrderIds.has(c.id.replace("CLM-LAB-", ""))) return false
+        return true
       })
     } catch {
       // ignore
@@ -1791,6 +1943,103 @@ export class BillingDatabase {
       )
       claims = [...claims, ...server]
     }
+
+    // Authoritative Settlement & Deduplication Reconciliation
+    // Invariant: Exactly one billing entry per patient encounter.
+    // A settled bill (balanceDue <= 0 and fully paid) MUST have status "Paid" and must NEVER appear as Draft/Due.
+    // If duplicate claims exist for the same encounter, merge them and preserve the settled/paid one.
+    const dedupedMap = new Map<string, ClaimRecord>()
+
+    claims.forEach((claim) => {
+      const recordedPayments = (claim.payments || []).reduce((s, p) => s + (p.amount || 0), 0)
+      const currentPaid = Math.max(claim.amountPaid || 0, recordedPayments)
+      const patientTotal = claim.patientPortion !== undefined ? claim.patientPortion : claim.totalAmount
+
+      let balanceDue = claim.balanceDue !== undefined ? claim.balanceDue : Math.max(0, patientTotal - currentPaid)
+      let status = claim.status
+
+      const isIns = (claim.insuranceProvider && claim.insuranceProvider !== "Self-Pay") || (claim.insurancePortion || 0) > 0 || !!claim.tpa
+      const isInsSettled = isIns && (!!claim.tpa?.settledAt || claim.status === "Paid")
+
+      if (!isIns) {
+        if ((currentPaid >= patientTotal && patientTotal > 0) || (patientTotal === 0 && balanceDue === 0)) {
+          balanceDue = 0
+          status = "Paid"
+        } else {
+          balanceDue = Math.max(0, patientTotal - currentPaid)
+          status = "Draft"
+        }
+      } else {
+        if (isInsSettled && balanceDue <= 0) {
+          balanceDue = 0
+          status = "Paid"
+        } else if (balanceDue > 0 && status === "Paid") {
+          status = "Draft"
+        }
+      }
+
+      const reconciledClaim: ClaimRecord = {
+        ...claim,
+        amountPaid: status === "Paid" && balanceDue === 0 ? Math.max(currentPaid, patientTotal) : currentPaid,
+        balanceDue,
+        status,
+      }
+
+      const normUmr = normalizeUmr(claim.patientId || claim.mrn)
+      const cleanEncId = cleanEnc(claim.encounterId)
+      const cleanInv = (claim.invoiceNo || "").toLowerCase().trim()
+
+      const primaryKey = normUmr && cleanEncId ? `${normUmr}|${cleanEncId}` : cleanInv || claim.id
+
+      if (!dedupedMap.has(primaryKey)) {
+        dedupedMap.set(primaryKey, reconciledClaim)
+      } else {
+        const existing = dedupedMap.get(primaryKey)!
+        const existingIsPaid = existing.status === "Paid" || existing.balanceDue === 0
+        const newIsPaid = reconciledClaim.status === "Paid" || reconciledClaim.balanceDue === 0
+
+        const mergedPayments = [...(existing.payments || [])]
+        ;(reconciledClaim.payments || []).forEach((p) => {
+          if (!mergedPayments.some((ep) => ep.id === p.id || ep.receiptNo === p.receiptNo)) {
+            mergedPayments.push(p)
+          }
+        })
+
+        const mergedItems = [...(existing.items || [])]
+        ;(reconciledClaim.items || []).forEach((it) => {
+          if (!mergedItems.some((ei) => ei.id === it.id || (ei.description === it.description && ei.category === it.category))) {
+            mergedItems.push(it)
+          }
+        })
+
+        const winner = (newIsPaid && !existingIsPaid) ? reconciledClaim : existing
+        const loser = (winner === reconciledClaim) ? existing : reconciledClaim
+
+        const subtotal = Math.max(winner.subtotal || 0, loser.subtotal || 0, mergedItems.reduce((s, it) => s + (it.total || 0), 0))
+        const totalAmount = subtotal
+        const patientPortion = subtotal
+        const recordedTotalPaid = mergedPayments.reduce((s, p) => s + (p.amount || 0), 0)
+        const totalPaid = (existingIsPaid && newIsPaid)
+          ? totalAmount
+          : Math.min(totalAmount, Math.max(winner.amountPaid || 0, loser.amountPaid || 0, recordedTotalPaid))
+        const finalBal = Math.max(0, totalAmount - totalPaid)
+        const finalStatus = (finalBal === 0 && totalAmount > 0) ? "Paid" : "Draft"
+
+        dedupedMap.set(primaryKey, {
+          ...winner,
+          subtotal,
+          totalAmount,
+          patientPortion,
+          amountPaid: totalPaid,
+          balanceDue: finalBal,
+          status: finalStatus,
+          items: mergedItems,
+          payments: mergedPayments,
+        })
+      }
+    })
+
+    claims = Array.from(dedupedMap.values())
 
     if (filter) {
       if (filter.status && filter.status !== "All") {
@@ -2969,6 +3218,31 @@ export class BillingDatabase {
 
     claims[idx] = updatedClaim
 
+    if (newBalanceDue === 0) {
+      claims.forEach((c, cIdx) => {
+        if (cIdx !== idx) {
+          const matchesThisEnc =
+            (c.encounterId && updatedClaim.encounterId && (
+              norm(c.encounterId) === norm(updatedClaim.encounterId) ||
+              cleanEnc(c.encounterId) === cleanEnc(updatedClaim.encounterId)
+            )) ||
+            (c.invoiceNo && updatedClaim.invoiceNo && norm(c.invoiceNo) === norm(updatedClaim.invoiceNo)) ||
+            (normalizeUmr(c.patientId) && normalizeUmr(updatedClaim.patientId) && normalizeUmr(c.patientId) === normalizeUmr(updatedClaim.patientId) && c.dateOfService === updatedClaim.dateOfService && c.department === updatedClaim.department)
+
+          if (matchesThisEnc) {
+            claims[cIdx] = {
+              ...c,
+              amountPaid: c.totalAmount,
+              balanceDue: 0,
+              status: newStatus,
+              payments: updatedPayments,
+              updatedAt: new Date().toISOString(),
+            }
+          }
+        }
+      })
+    }
+
     if (claim.serverInvoiceId) {
       // A server bill: show the payment now, make it real on the server (so
       // every desk sees it), then re-sync. If the server refuses, the next
@@ -2991,11 +3265,19 @@ export class BillingDatabase {
     }
 
     // Sync underlying OP encounter in db.ts
-    if (updatedClaim.encounterId) {
+    if (updatedClaim.encounterId || updatedClaim.patientId) {
       try {
-        const enc = db.getEncounterById(updatedClaim.encounterId);
+        const enc = db.getEncounters().find(
+          (e) =>
+            e.id === updatedClaim.encounterId ||
+            (e.id && updatedClaim.encounterId && e.id.toLowerCase() === updatedClaim.encounterId.toLowerCase()) ||
+            (e.opNumber && updatedClaim.encounterId && e.opNumber.toLowerCase() === updatedClaim.encounterId.toLowerCase()) ||
+            (cleanEnc(e.id) && cleanEnc(updatedClaim.encounterId) && cleanEnc(e.id) === cleanEnc(updatedClaim.encounterId)) ||
+            (cleanEnc(e.opNumber) && cleanEnc(updatedClaim.encounterId) && cleanEnc(e.opNumber) === cleanEnc(updatedClaim.encounterId)) ||
+            (normalizeUmr(e.umr) && normalizeUmr(updatedClaim.patientId) && normalizeUmr(e.umr) === normalizeUmr(updatedClaim.patientId))
+        ) || (updatedClaim.encounterId ? db.getEncounterById(updatedClaim.encounterId) : undefined);
         if (enc) {
-          db.updateEncounter(updatedClaim.encounterId, {
+          db.updateEncounter(enc.id, {
             billing: {
               ...enc.billing,
               status: newBalanceDue === 0 ? "Paid" : "Pending",
@@ -3026,14 +3308,21 @@ export class BillingDatabase {
             const parsed = JSON.parse(rawOrders)
             let labChanged = false
             const updatedLab = parsed.map((o: any) => {
-              const matchEnc = o.encounterId && updatedClaim.encounterId && o.encounterId.toLowerCase() === updatedClaim.encounterId.toLowerCase()
+              const matchEnc = (o.encounterId && updatedClaim.encounterId && (
+                o.encounterId.toLowerCase() === updatedClaim.encounterId.toLowerCase() ||
+                cleanEnc(o.encounterId) === cleanEnc(updatedClaim.encounterId) ||
+                (o.opNumber && cleanEnc(o.opNumber) === cleanEnc(updatedClaim.encounterId))
+              )) || (o.opNumber && updatedClaim.encounterId && (
+                o.opNumber.toLowerCase() === updatedClaim.encounterId.toLowerCase() ||
+                cleanEnc(o.opNumber) === cleanEnc(updatedClaim.encounterId)
+              ))
               const matchInv = o.billing?.invoiceNo && (
                 (claim.invoiceNo && o.billing.invoiceNo.toLowerCase() === claim.invoiceNo.toLowerCase()) ||
                 o.billing.invoiceNo.toLowerCase() === (claim.id || "").toLowerCase()
               )
-              const matchUmr = o.umr && (
-                (claim.patientId && o.umr.toLowerCase() === claim.patientId.toLowerCase()) ||
-                (claim.mrn && o.umr.toLowerCase() === claim.mrn.toLowerCase())
+              const matchUmr = normalizeUmr(o.umr) && (
+                (claim.patientId && normalizeUmr(o.umr) === normalizeUmr(claim.patientId)) ||
+                (claim.mrn && normalizeUmr(o.umr) === normalizeUmr(claim.mrn))
               )
               if (matchEnc || matchInv || (matchUmr && o.billing?.status !== "Paid")) {
                 labChanged = true
@@ -3078,20 +3367,26 @@ export class BillingDatabase {
 
       // 2. Sync Radiology Studies (STORAGE_KEY_RAD_STUDIES)
       try {
-        const radStudies = this.getRadiologyStudies()
+        const radStudies = this.load<RadiologyStudyRecord[]>(STORAGE_KEY_RAD_STUDIES, [])
         let radChanged = false
         radStudies.forEach((rs: any) => {
           const matchInv = rs.invoiceNo && (
             (claim.invoiceNo && rs.invoiceNo.toLowerCase() === claim.invoiceNo.toLowerCase()) ||
             rs.invoiceNo.toLowerCase() === (claim.id || "").toLowerCase()
           )
-          const matchEnc = rs.encounterId && updatedClaim.encounterId && rs.encounterId.toLowerCase() === updatedClaim.encounterId.toLowerCase()
-          const matchUmr = rs.umr && (
-            (claim.patientId && rs.umr.toLowerCase() === claim.patientId.toLowerCase()) ||
-            (claim.mrn && rs.umr.toLowerCase() === claim.mrn.toLowerCase())
+          const matchEnc = (rs.encounterId && updatedClaim.encounterId && (
+            rs.encounterId.toLowerCase() === updatedClaim.encounterId.toLowerCase() ||
+            (rs.opNumber && rs.opNumber.toLowerCase() === updatedClaim.encounterId.toLowerCase())
+          )) || (rs.opNumber && updatedClaim.encounterId && rs.opNumber.toLowerCase() === updatedClaim.encounterId.toLowerCase())
+          const matchUmr = normalizeUmr(rs.umr || rs.mrn) && (
+            normalizeUmr(rs.umr || rs.mrn) === normalizeUmr(claim.patientId) ||
+            normalizeUmr(rs.umr || rs.mrn) === normalizeUmr(claim.mrn)
           )
           const matchStudyInClaim = (claim.items || []).some(
-            (it) => it.id === `ITEM-RAD-${rs.id}` || (rs.study && it.description.toLowerCase().includes(rs.study.toLowerCase()))
+            (it) => it.id === `ITEM-RAD-${rs.id}` ||
+              (((it.category as string) === "Radiology / Imaging" || (it.category as string) === "Radiology") &&
+                (it.description.toLowerCase().includes((rs.study || "").toLowerCase()) ||
+                 (rs.study && it.description.toLowerCase().includes(rs.study.toLowerCase()))))
           )
 
           if ((matchEnc || matchInv || matchStudyInClaim || (matchUmr && rs.paymentStatus !== "Paid")) && rs.paymentStatus !== "Paid") {
@@ -3103,7 +3398,7 @@ export class BillingDatabase {
             rs.billingClearedAt = rs.billingClearedAt || newPayment.paymentDate || nowIso
             rs.eligibleAt = rs.eligibleAt || newPayment.paymentDate || nowIso
             rs.billingStatus = "Cleared / Paid"
-            rs.normalizedStatus = "ORDERED"
+            rs.normalizedStatus = rs.status === "Orders" ? "ORDERED" : rs.normalizedStatus || "ORDERED"
             rs.history = [
               ...(rs.history || []),
               {
@@ -3158,24 +3453,26 @@ export class BillingDatabase {
       }),
     }).catch(() => {})
 
-    // Automatically dispatch financial clearance to Radiology & Laboratory ONLY if applicable
+    // Automatically dispatch financial clearance to Radiology & Laboratory ONLY when fully settled (newBalanceDue === 0)
     try {
-      const hasRad = claim.department === "Radiology" || (claim.items || []).some((it) => it.category === "Radiology / Imaging" || it.category === "Radiology")
-      const hasLab = claim.department === "Laboratory" || (claim.items || []).some((it) => it.category === "Laboratory" || it.category === "Lab")
+      if (newBalanceDue === 0) {
+        const hasRad = claim.department === "Radiology" || (claim.items || []).some((it) => it.category === "Radiology / Imaging" || it.category === "Radiology")
+        const hasLab = claim.department === "Laboratory" || (claim.items || []).some((it) => it.category === "Laboratory" || it.category === "Lab")
 
-      if (hasRad) {
-        this.dispatchClearanceToDepartment(
-          claim.patientName || claim.patientId,
-          "Radiology",
-          newPayment.receiptNo,
-        )
-      }
-      if (hasLab) {
-        this.dispatchClearanceToDepartment(
-          claim.patientName || claim.patientId,
-          "Laboratory",
-          newPayment.receiptNo,
-        )
+        if (hasRad) {
+          this.dispatchClearanceToDepartment(
+            claim.patientName || claim.patientId,
+            "Radiology",
+            newPayment.receiptNo,
+          )
+        }
+        if (hasLab) {
+          this.dispatchClearanceToDepartment(
+            claim.patientName || claim.patientId,
+            "Laboratory",
+            newPayment.receiptNo,
+          )
+        }
       }
       // Also invalidate radiology workflow in-memory cache so payment reflects instantly
       if (typeof window !== "undefined") {
@@ -3515,7 +3812,7 @@ export class BillingDatabase {
         for (const item of itemsToCreate) {
           const studyName = item.description;
           const lowerName = studyName.toLowerCase();
-          const modality = lowerName.includes("ct") || lowerName.includes("computed tomography")
+          const modality = /\b(ct|computed tomography)\b/i.test(lowerName)
             ? "CT"
             : lowerName.includes("mri") || lowerName.includes("magnetic")
               ? "MR"
@@ -4268,15 +4565,15 @@ export class BillingDatabase {
       const radItems = claim.items.filter(
         (it) =>
           it.category === "Radiology / Imaging" ||
+          (it.category as string) === "Radiology" ||
           it.description.toLowerCase().includes("x-ray") ||
           it.description.toLowerCase().includes("xray") ||
-          it.description.toLowerCase().includes("ct") ||
+          /\b(ct|ct scan|computed tomography|hrct|cect|ncct)\b/i.test(it.description) ||
           it.description.toLowerCase().includes("mri") ||
           it.description.toLowerCase().includes("ultrasound") ||
           it.description.toLowerCase().includes("usg") ||
           it.description.toLowerCase().includes("echo") ||
-          it.description.toLowerCase().includes("dexa") ||
-          it.description.toLowerCase().includes("scan"),
+          it.description.toLowerCase().includes("dexa"),
       )
 
       if (radItems.length > 0) {
@@ -4294,72 +4591,43 @@ export class BillingDatabase {
           .toLowerCase()
           .trim()
 
-        const existingIdx = syncedStudies.findIndex((s) => {
+        const matchingIndices: number[] = []
+        syncedStudies.forEach((s, idx) => {
           const sName = (s.patient || "").toLowerCase().trim()
-
-          const sMrn = (s.mrn || "").toLowerCase().trim()
-
+          const sMrn = normalizeUmr(s.mrn || s.umr)
+          const cMrn = normalizeUmr(claim.patientId || claim.mrn)
           const sInv = s.invoiceNo?.toLowerCase().trim()
-
-          return (
-            (sInv && sInv === claim.invoiceNo.toLowerCase().trim()) ||
-            (sName === targetName &&
-              s.study
-                .toLowerCase()
-                .includes(radItems[0].description.toLowerCase())) ||
-            (targetMrn &&
-              sMrn === targetMrn &&
-              s.study
-                .toLowerCase()
-                .includes(radItems[0].description.toLowerCase()))
+          const matchInv = sInv && (sInv === claim.invoiceNo.toLowerCase().trim() || sInv === (claim.id || "").toLowerCase().trim())
+          const matchEnc = matchesEncounter(s, { id: claim.encounterId, opNumber: claim.encounterId, umr: claim.patientId })
+          const matchItem = radItems.some((it) =>
+            it.id === `ITEM-RAD-${s.id}` ||
+            (s.study && (
+              it.description.toLowerCase().includes(s.study.toLowerCase()) ||
+              s.study.toLowerCase().includes(it.description.toLowerCase())
+            ))
           )
+          const matchPatient = (sName && sName === targetName) || (sMrn && cMrn && sMrn === cMrn)
+
+          if (matchInv || matchEnc || (matchPatient && matchItem)) {
+            matchingIndices.push(idx)
+          }
         })
 
-        if (existingIdx >= 0) {
-          const current = syncedStudies[existingIdx]
-
-          syncedStudies[existingIdx] = {
-            ...current,
-
-            paymentStatus: isPaid ? "Paid" : ((claim.status as string) === "Awaiting Billing" || claim.balanceDue > 0 ? "Payment Pending" : current.paymentStatus),
-
-            paidReceiptNo: isPaid
-              ? current.paidReceiptNo || receiptNo
-              : current.paidReceiptNo,
-
-            paidAt: isPaid
-              ? current.paidAt || claim.payments?.[0]?.paymentDate || current.orderedAt || current.createdAt
-              : current.paidAt,
-
-            billingClearedAt: isPaid
-              ? current.billingClearedAt || current.paidAt || claim.payments?.[0]?.paymentDate || current.orderedAt || current.createdAt
-              : current.billingClearedAt,
-
-            eligibleAt: isPaid
-              ? current.eligibleAt || current.billingClearedAt || current.paidAt || claim.payments?.[0]?.paymentDate || current.orderedAt || current.createdAt
-              : current.eligibleAt,
-
-            invoiceNo: claim.invoiceNo,
-
-            umr: claim.patientId,
-
-            department: claim.department,
-
-            indication:
-              current.indication ||
-              claim.carePathway ||
-              claim.diagnosisCodes?.join(", "),
-
-            orderedItems: radItems.map((it) => ({
-              description: it.description,
-
-              cptCode: it.cptCode,
-
-              price: it.unitPrice || it.total,
-
-              quantity: it.quantity || 1,
-            })),
-          }
+        if (matchingIndices.length > 0) {
+          matchingIndices.forEach((idx) => {
+            const current = syncedStudies[idx]
+            syncedStudies[idx] = {
+              ...current,
+              paymentStatus: isPaid ? "Paid" : (claim.balanceDue > 0 ? "Payment Pending" : current.paymentStatus),
+              paidReceiptNo: isPaid ? (current.paidReceiptNo || receiptNo) : current.paidReceiptNo,
+              paidAt: isPaid ? (current.paidAt || claim.payments?.[0]?.paymentDate || current.orderedAt || current.createdAt) : current.paidAt,
+              billingClearedAt: isPaid ? (current.billingClearedAt || current.paidAt || claim.payments?.[0]?.paymentDate || current.orderedAt || current.createdAt) : current.billingClearedAt,
+              eligibleAt: isPaid ? (current.eligibleAt || current.billingClearedAt || current.paidAt || claim.payments?.[0]?.paymentDate || current.orderedAt || current.createdAt) : current.eligibleAt,
+              invoiceNo: claim.invoiceNo,
+              umr: claim.patientId || current.umr,
+              department: claim.department || current.department,
+            }
+          })
         } else {
           const studySummary = radItems.map((it) => it.description).join(" + ")
 
@@ -4370,7 +4638,7 @@ export class BillingDatabase {
             0,
           )
 
-          const modality = studySummary.toLowerCase().includes("ct")
+          const modality = /\b(ct|computed tomography)\b/i.test(studySummary)
             ? "CT"
             : studySummary.toLowerCase().includes("mri") ||
                 studySummary.toLowerCase().includes("mr ")
@@ -4463,15 +4731,15 @@ export class BillingDatabase {
       const radItems = (dept.items || []).filter(
         (it) =>
           it.category === "Radiology / Imaging" ||
+          (it.category as string) === "Radiology" ||
           it.description.toLowerCase().includes("x-ray") ||
           it.description.toLowerCase().includes("xray") ||
-          it.description.toLowerCase().includes("ct") ||
+          /\b(ct|ct scan|computed tomography|hrct|cect|ncct)\b/i.test(it.description) ||
           it.description.toLowerCase().includes("mri") ||
           it.description.toLowerCase().includes("ultrasound") ||
           it.description.toLowerCase().includes("usg") ||
           it.description.toLowerCase().includes("echo") ||
-          it.description.toLowerCase().includes("dexa") ||
-          it.description.toLowerCase().includes("scan"),
+          it.description.toLowerCase().includes("dexa"),
       )
 
       if (radItems.length > 0) {
@@ -4512,7 +4780,7 @@ export class BillingDatabase {
             0,
           )
 
-          const modality = studySummary.toLowerCase().includes("ct")
+          const modality = /\b(ct|computed tomography)\b/i.test(studySummary)
             ? "CT"
             : studySummary.toLowerCase().includes("mri") ||
                 studySummary.toLowerCase().includes("mr ")
@@ -4728,7 +4996,7 @@ export class BillingDatabase {
       let claimIdx = claims.findIndex(
         (c) =>
           c.id === `CLM-${encId}` ||
-          (c.encounterId && c.encounterId.toLowerCase() === encId.toLowerCase()) ||
+          (c.encounterId && (c.encounterId.toLowerCase() === encId.toLowerCase() || c.encounterId.toLowerCase() === encOp.toLowerCase())) ||
           c.invoiceNo === invoiceNo
       )
 
@@ -4736,40 +5004,8 @@ export class BillingDatabase {
       if (claimIdx >= 0) {
         claim = { ...claims[claimIdx] }
       } else {
-        const regFee = payload.encounter.billing?.registrationFee ?? (payload.encounter.isNew === false ? 0 : 20)
-        const consultFee = payload.encounter.billing?.consultationFee ?? getDoctorConsultationFee(payload.encounter.assignedDoctor || payload.doctor?.name || "")
         const items: InvoiceItem[] = []
-
-        if (regFee > 0) {
-          items.push({
-            id: `ITEM-REG-${encId}`,
-            description: `Patient Registration Fee – ₹${regFee}`,
-            category: "Registration" as any,
-            cptCode: "99201",
-            quantity: 1,
-            unitPrice: regFee,
-            total: regFee,
-            insuranceCovered: 0,
-            patientPayable: regFee,
-            orderedBy: "Front Desk Registration",
-            orderedAt: payload.encounter.registrationTime || new Date().toISOString(),
-          })
-        }
-
-        items.push({
-          id: `ITEM-CONSULT-${encId}`,
-          description: `Physician Consultation Fee (${payload.encounter.assignedDoctor || payload.doctor?.name || payload.encounter.dept || "Attending Specialist"})`,
-          category: "Consultation",
-          cptCode: "99205",
-          quantity: 1,
-          unitPrice: consultFee,
-          total: consultFee,
-          insuranceCovered: 0,
-          patientPayable: consultFee,
-          orderedBy: payload.doctor?.name || payload.encounter.assignedDoctor || "OP Physician",
-          orderedAt: payload.encounter.registrationTime || new Date().toISOString(),
-        })
-
+        // Note: As per Requirement 3, OP registration fee is strictly NOT included in investigation billing.
         claim = {
           id: `CLM-${encId}`,
           invoiceNo,
@@ -4803,9 +5039,9 @@ export class BillingDatabase {
         }
       }
 
-      // Preserve existing registration & consultation items, remove generic investigation placeholders
+      // Preserve existing items (such as doctor bedside clinical services), strictly filter out registration fee & generic placeholders
       let updatedItems = (claim.items || []).filter(
-        (it) => it.id !== `ITEM-LAB-${encId}` && it.description !== "Diagnostic Investigations & Services"
+        (it) => it.category !== "Registration" && !it.id.startsWith("ITEM-REG-") && it.id !== `ITEM-LAB-${encId}` && it.description !== "Diagnostic Investigations & Services"
       )
 
       // Add / sync Laboratory items
@@ -4813,14 +5049,14 @@ export class BillingDatabase {
         payload.labOrder.tests.forEach((t: any, i: number) => {
           const itemId = `ITEM-LAB-${payload.labOrder.id}-${i + 1}`
           const exists = updatedItems.some(
-            (it) => it.id === itemId || (it.category === "Laboratory" && it.description.toLowerCase() === (t.name || "").toLowerCase())
+            (it) => it.id === itemId || (it.category === "Laboratory" && it.description.toLowerCase().trim() === (t.name || "").toLowerCase().trim())
           )
           if (!exists) {
             updatedItems.push({
               id: itemId,
               description: t.name,
               category: "Laboratory",
-              cptCode: "80050",
+              cptCode: t.code || "80050",
               quantity: 1,
               unitPrice: t.price || 0,
               total: t.price || 0,
@@ -4841,7 +5077,8 @@ export class BillingDatabase {
             (it) =>
               it.id === itemId ||
               (((it.category as string) === "Radiology / Imaging" || (it.category as string) === "Radiology") &&
-                it.description.toLowerCase().includes((s.study || "").toLowerCase()))
+                (it.description.toLowerCase().trim() === `${s.study} (${s.modality})`.toLowerCase().trim() ||
+                 it.description.toLowerCase().trim() === (s.study || "").toLowerCase().trim()))
           )
           if (!exists) {
             updatedItems.push({
@@ -4855,27 +5092,33 @@ export class BillingDatabase {
               insuranceCovered: 0,
               patientPayable: s.price || 0,
               orderedBy: payload.doctor?.name || payload.encounter.assignedDoctor || "Attending Doctor",
-              orderedAt: s.createdAt || new Date().toISOString(),
+              orderedAt: s.createdAt || s.orderedAt || new Date().toISOString(),
             })
           }
         })
       }
 
+      // Ensure NO registration fee in investigation billing
+      updatedItems = updatedItems.filter((it) => it.category !== "Registration" && !it.id.startsWith("ITEM-REG-"))
+
+      // Set department and pathway based on included investigations
+      const hasLab = updatedItems.some((it) => it.category === "Laboratory")
+      const hasRad = updatedItems.some((it) => (it.category as string) === "Radiology / Imaging" || (it.category as string) === "Radiology")
+      if (hasLab && hasRad) {
+        claim.department = "Outpatient"
+        claim.carePathway = "Laboratory & Radiology Investigations"
+      } else if (hasLab) {
+        claim.department = "Laboratory"
+        claim.carePathway = "Laboratory Diagnostics"
+      } else if (hasRad) {
+        claim.department = "Radiology"
+        claim.carePathway = "Radiology Imaging"
+      }
+
       // Recalculate totals with strict separation of registration vs investigation balances
       const subtotal = updatedItems.reduce((sum, it) => sum + (it.total || 0), 0)
       const recordedPayments = (claim.payments || []).reduce((sum, p) => sum + (p.amount || 0), 0)
-
-      const regConsultTotal = updatedItems
-        .filter((it) => it.category === "Registration" || it.category === "Consultation")
-        .reduce((sum, it) => sum + (it.total || 0), 0)
-      const isRegPaid = payload.encounter.billing?.status === "Paid"
-
-      let effectivePaid = recordedPayments
-      if (effectivePaid === 0 && isRegPaid) {
-        effectivePaid = regConsultTotal
-      }
-
-      const amountPaid = Math.min(subtotal, Math.max(claim.amountPaid || 0, effectivePaid))
+      const amountPaid = Math.min(subtotal, Math.max(claim.amountPaid || 0, recordedPayments))
       const balanceDue = Math.max(0, subtotal - amountPaid)
       const isPaid = balanceDue === 0 && subtotal > 0
 
@@ -4891,9 +5134,9 @@ export class BillingDatabase {
       // Suppress any split/orphan claims for this encounter
       const filteredClaims = claims.filter((c) => {
         if (c.id === claim.id) return false
-        if (c.encounterId && c.encounterId.toLowerCase() === encId.toLowerCase() && c.id !== claim.id) return false
+        if (c.encounterId && (c.encounterId.toLowerCase() === encId.toLowerCase() || c.encounterId.toLowerCase() === encOp.toLowerCase()) && c.id !== claim.id) return false
         if (payload.labOrder?.id && c.id === `CLM-LAB-${payload.labOrder.id}`) return false
-        if (payload.radiologyStudies && payload.radiologyStudies.some((s) => c.id === `CLM-${s.id}`)) return false
+        if (payload.radiologyStudies && payload.radiologyStudies.some((s) => c.id === `CLM-${s.id}` || c.id === `CLM-RAD-${s.id}`)) return false
         return true
       })
 
@@ -4908,7 +5151,7 @@ export class BillingDatabase {
             const parsed = JSON.parse(rawOrders)
             let updatedLab = false
             const nextOrders = parsed.map((o: any) => {
-              if (o.id === payload.labOrder.id || (o.encounterId && o.encounterId === encId)) {
+              if (o.id === payload.labOrder.id || (o.encounterId && (o.encounterId === encId || o.encounterId === encOp))) {
                 updatedLab = true
                 return {
                   ...o,
@@ -4930,14 +5173,15 @@ export class BillingDatabase {
       // Ensure Radiology Studies in STORAGE_KEY_RAD_STUDIES hold the consolidated invoiceNo
       if (payload.radiologyStudies && payload.radiologyStudies.length > 0) {
         try {
-          const radStudies = this.getRadiologyStudies()
+          const radStudies = this.load<RadiologyStudyRecord[]>(STORAGE_KEY_RAD_STUDIES, [])
           let updatedRad = false
           const nextRad = radStudies.map((rs: any) => {
-            if (rs.encounterId && rs.encounterId === encId) {
+            if (rs.encounterId && (rs.encounterId === encId || rs.encounterId === encOp)) {
               updatedRad = true
               return {
                 ...rs,
                 invoiceNo: claim.invoiceNo,
+                opNumber: encOp,
               }
             }
             return rs
@@ -4950,17 +5194,13 @@ export class BillingDatabase {
       }
 
       // Synchronize OP Encounter billing in db.ts
-      const diagFee = updatedItems
-        .filter((it) => it.category === "Laboratory" || (it.category as string) === "Radiology / Imaging")
-        .reduce((sum, it) => sum + (it.total || 0), 0)
-
       try {
         const enc = db.getEncounterById(encId)
         if (enc) {
           db.updateEncounter(encId, {
             billing: {
               ...(enc.billing || {}),
-              labFee: diagFee,
+              labFee: subtotal,
               total: subtotal,
               status: balanceDue === 0 ? "Paid" : "Pending",
             },
@@ -4979,106 +5219,114 @@ export class BillingDatabase {
 
   static ensureRadiologyClaim(study: RadiologyStudyRecord): void {
     try {
-      const claims = this.load<ClaimRecord[]>(
-        STORAGE_KEY_CLAIMS,
-        [],
-      )
-      const existingIdx = claims.findIndex(
-        (c) =>
-          c.department === "Radiology" &&
-          (c.invoiceNo === study.invoiceNo ||
-            c.id === `CLM-${study.id}` ||
-            (study.encounterId && c.encounterId === study.encounterId && c.items.some((it) => it.description.includes(study.study)))),
-      )
+      const enc = db.getEncounters().find((e) => matchesEncounter(study, e))
+      if (enc) {
+        this.ensureConsolidatedInvestigationClaim({
+          encounter: enc,
+          radiologyStudies: [study],
+        })
+        return
+      }
 
+      // Standalone or walk-in radiology study (no OP encounter found in db)
+      const claims = this.load<ClaimRecord[]>(STORAGE_KEY_CLAIMS, [])
+      const studyUmr = normalizeUmr(study.umr || study.mrn)
+      const studyEnc = (study.encounterId || study.opNumber || "").toLowerCase()
       const radItem: InvoiceItem = {
         id: `ITEM-RAD-${study.id}`,
         description: `${study.study} (${study.modality})`,
         category: "Radiology / Imaging",
-        cptCode: `RAD-${study.modality}`,
+        cptCode: `RAD-${study.modality || "IMG"}`,
         quantity: 1,
-        unitPrice: study.price,
-        total: study.price,
+        unitPrice: study.price || 0,
+        total: study.price || 0,
         insuranceCovered: 0,
-        patientPayable: study.price,
+        patientPayable: study.price || 0,
         orderedBy: study.provider || "Attending Doctor",
+        orderedAt: study.createdAt || study.orderedAt || new Date().toISOString(),
       }
+
+      // Check if consolidated claim already exists for this patient and encounter
+      const existingIdx = claims.findIndex((c) => {
+        const cUmr = normalizeUmr(c.patientId || c.mrn)
+        const cEnc = (c.encounterId || "").toLowerCase()
+        if (studyEnc && cEnc && studyEnc === cEnc) return true
+        if (studyUmr && cUmr && studyUmr === cUmr && (!studyEnc || studyEnc === cEnc)) return true
+        if (study.invoiceNo && !study.invoiceNo.startsWith("INV-RAD-") && c.invoiceNo === study.invoiceNo) return true
+        return false
+      })
 
       if (existingIdx >= 0) {
         const existing = claims[existingIdx]
-        const hasItem = existing.items.some(
-          (it) => it.id === radItem.id || it.description.includes(study.study),
+        const hasItem = (existing.items || []).some(
+          (it) => it.id === radItem.id ||
+            (((it.category as string) === "Radiology / Imaging" || (it.category as string) === "Radiology") &&
+              it.description.toLowerCase().trim() === radItem.description.toLowerCase().trim())
         )
-        if (!hasItem) {
-          const updatedItems = [...existing.items, radItem]
-          const subtotal = existing.subtotal + study.price
-          const totalAmount = existing.totalAmount + study.price
-          const patientPortion = existing.patientPortion + study.price
-          const balanceDue = existing.balanceDue + study.price
+        const updatedItems = hasItem ? existing.items : [...(existing.items || []), radItem]
+        const subtotal = updatedItems.reduce((s, it) => s + (it.total || 0), 0)
+        const recordedPayments = (existing.payments || []).reduce((s, p) => s + (p.amount || 0), 0)
+        const amountPaid = Math.min(subtotal, Math.max(existing.amountPaid || 0, recordedPayments))
+        const balanceDue = Math.max(0, subtotal - amountPaid)
+        const isPaid = balanceDue === 0 && subtotal > 0
 
-          claims[existingIdx] = {
-            ...existing,
-            items: updatedItems,
-            subtotal,
-            totalAmount,
-            patientPortion,
-            balanceDue,
-            status: existing.status === "Paid" ? "Draft" : existing.status,
-            updatedAt: new Date().toISOString(),
-          }
-          this.save(STORAGE_KEY_CLAIMS, claims)
-        }
-      } else {
-        let resolvedAge = 35
-        let resolvedGender: "Male" | "Female" | "Other" = "Male"
-        let resolvedPhone = ""
-        try {
-          const p =
-            db.getPatientByUmr(study.umr || study.mrn || "") ||
-            db.getPatients().find((pt) => pt.name === study.patient)
-          if (p) {
-            if (p.age) resolvedAge = Number(p.age)
-            if (p.gender === "Female" || p.gender === "Male") resolvedGender = p.gender
-            if (p.phone) resolvedPhone = p.phone
-          }
-        } catch {}
-
-        const newClaim: ClaimRecord = {
-          id: `CLM-${study.id}`,
-          invoiceNo:
-            study.invoiceNo ||
-            `INV-RAD-${study.id.replace(/\D/g, "") || Date.now().toString().slice(-4)}`,
-          encounterId: study.encounterId || study.id,
-          patientId: study.umr || study.mrn,
-          patientName: study.patient,
-          mrn: study.mrn,
-          age: resolvedAge,
-          gender: resolvedGender,
-          phone: resolvedPhone,
-          payments: [],
-          department: "Radiology",
-          carePathway: `Radiology Imaging — ${study.study}`,
-          dateOfService: new Date().toISOString().split("T")[0],
-          insuranceProvider: "Self-Pay",
-          policyNumber: "N/A",
-          status: "Draft",
-          attendingDoctor: study.provider || "Attending Doctor",
-          diagnosisCodes: [study.diagnosis || "Z01.89"],
-          items: [radItem],
-          subtotal: study.price,
-          discount: 0,
-          tax: 0,
-          totalAmount: study.price,
-          insurancePortion: 0,
-          patientPortion: study.price,
-          amountPaid: 0,
-          balanceDue: study.price,
-          createdAt: new Date().toISOString(),
+        claims[existingIdx] = {
+          ...existing,
+          items: updatedItems,
+          subtotal,
+          totalAmount: subtotal,
+          patientPortion: subtotal,
+          amountPaid,
+          balanceDue,
+          status: isPaid ? "Paid" : "Draft",
           updatedAt: new Date().toISOString(),
         }
-        claims.unshift(newClaim)
         this.save(STORAGE_KEY_CLAIMS, claims)
+        this.emitUpdate()
+        return
       }
+
+      // If no claim exists at all, create ONE consolidated claim for this patient & encounter
+      const encKey = study.opNumber || study.encounterId || study.id
+      const invoiceNo = study.invoiceNo && !study.invoiceNo.startsWith("INV-RAD-")
+        ? study.invoiceNo
+        : `INV-${study.opNumber || study.encounterId || study.id.replace(/\D/g, "") || Date.now().toString().slice(-4)}`
+
+      const newClaim: ClaimRecord = {
+        id: `CLM-${encKey}`,
+        invoiceNo,
+        encounterId: study.encounterId || encKey,
+        patientId: study.umr || study.mrn || "WALK-IN",
+        patientName: study.patient || "Radiology Patient",
+        mrn: (study.mrn || study.umr || "").replace("UMR", ""),
+        age: (study as any).age || 35,
+        gender: (study as any).gender || "Male",
+        phone: (study as any).phone || "",
+        payments: [],
+        department: "Radiology",
+        carePathway: `Radiology Imaging — ${study.study}`,
+        dateOfService: (study.orderDate || study.ordered || "").split(" · ")[0] || new Date().toISOString().split("T")[0],
+        insuranceProvider: "Self-Pay",
+        policyNumber: "N/A",
+        status: study.isPaid || study.paymentStatus === "Paid" ? "Paid" : "Draft",
+        attendingDoctor: study.provider || "Attending Doctor",
+        diagnosisCodes: [study.diagnosis || "Z01.89"],
+        items: [radItem],
+        subtotal: study.price || 0,
+        discount: 0,
+        tax: 0,
+        totalAmount: study.price || 0,
+        insurancePortion: 0,
+        patientPortion: study.price || 0,
+        amountPaid: study.isPaid || study.paymentStatus === "Paid" ? (study.price || 0) : 0,
+        balanceDue: study.isPaid || study.paymentStatus === "Paid" ? 0 : (study.price || 0),
+        createdAt: study.createdAt || new Date().toISOString(),
+        updatedAt: study.createdAt || new Date().toISOString(),
+      }
+
+      claims.unshift(newClaim)
+      this.save(STORAGE_KEY_CLAIMS, claims)
+      this.emitUpdate()
     } catch (err) {
       console.warn("ensureRadiologyClaim error:", err)
     }
@@ -5086,26 +5334,25 @@ export class BillingDatabase {
 
   static ensureLaboratoryClaim(order: any): void {
     try {
-      if (order.encounterId) {
-        try {
-          const enc = db.getEncounterById(order.encounterId)
-          if (enc) {
-            this.ensureConsolidatedInvestigationClaim({
-              encounter: enc,
-              labOrder: order,
-            })
-            return
-          }
-        } catch {}
+      const enc = db.getEncounters().find((e) => matchesEncounter(order, e))
+      if (enc) {
+        this.ensureConsolidatedInvestigationClaim({
+          encounter: enc,
+          labOrder: order,
+        })
+        return
       }
 
       const claims = this.load<ClaimRecord[]>(STORAGE_KEY_CLAIMS, [])
+      const orderUmr = normalizeUmr(order.umr)
+      const orderEnc = (order.encounterId || "").toLowerCase()
       const existingIdx = claims.findIndex(
         (c) =>
           c.department === "Laboratory" &&
           (c.id === `CLM-LAB-${order.id}` ||
             c.invoiceNo === order.billing?.invoiceNo ||
-            (order.encounterId && c.encounterId === order.encounterId && c.items.some((it) => (order.tests || []).some((t: any) => it.description.includes(t.name)))))
+            (orderEnc && c.encounterId && c.encounterId.toLowerCase() === orderEnc) ||
+            (orderUmr && normalizeUmr(c.patientId || c.mrn) === orderUmr && (!orderEnc || (c.encounterId || "").toLowerCase() === orderEnc)))
       )
 
       const isPaid = order.billing?.status === "Paid"
@@ -5114,7 +5361,7 @@ export class BillingDatabase {
         id: `ITEM-LAB-${order.id}-${i + 1}`,
         description: t.name,
         category: "Laboratory",
-        cptCode: "80050",
+        cptCode: t.code || "80050",
         quantity: 1,
         unitPrice: t.price || 0,
         total: t.price || 0,
@@ -5136,8 +5383,8 @@ export class BillingDatabase {
       }
 
       const newClaim: ClaimRecord = {
-        id: `CLM-LAB-${order.id}`,
-        invoiceNo: order.billing?.invoiceNo || `INV-LAB-${(order.id || "").replace(/\D/g, "") || Date.now().toString().slice(-4)}`,
+        id: `CLM-${order.encounterId || order.id}`,
+        invoiceNo: order.billing?.invoiceNo || `INV-${order.encounterId || (order.id || "").replace(/\D/g, "") || Date.now().toString().slice(-4)}`,
         encounterId: order.encounterId,
         patientId: order.umr,
         patientName: order.patientName,
@@ -5202,27 +5449,22 @@ export class BillingDatabase {
     }
 
     const id = studyData.id || `RAD-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 900)}`
-    const invoiceNo =
-      studyData.invoiceNo ||
-      `INV-RAD-${Date.now().toString().slice(-5)}`
 
-    const nowIso = new Date().toISOString()
-    // Dynamically resolve patient's original date & time, age, gender, and OP number
+    // Dynamically resolve patient's original date & time, age, gender, OP number, and canonical invoiceNo
+    const resolvedEncounter = db.getEncounters().find((e) =>
+      matchesEncounter({ encounterId: studyData.encounterId, opNumber: (studyData as any).opNumber, umr: studyData.umr, mrn: studyData.mrn }, e)
+    )
+
     let dynamicDate = ""
     let resolvedAge = (studyData as any).age
     let resolvedGender = (studyData as any).gender
-    let resolvedOpNumber = (studyData as any).opNumber
-    if (studyData.encounterId) {
-      try {
-        const enc = db.getEncounterById(studyData.encounterId)
-        if (enc) {
-          dynamicDate = OpReportsService.getEncounterDate(enc)
-          if (resolvedAge === undefined && enc.age) resolvedAge = enc.age
-          if (!resolvedGender && enc.sex) resolvedGender = enc.sex
-          if (!resolvedOpNumber && enc.opNumber) resolvedOpNumber = enc.opNumber
-        }
-      } catch {}
+    let resolvedOpNumber = (studyData as any).opNumber || resolvedEncounter?.opNumber
+    if (resolvedEncounter) {
+      dynamicDate = OpReportsService.getEncounterDate(resolvedEncounter)
+      if (resolvedAge === undefined && resolvedEncounter.age) resolvedAge = resolvedEncounter.age
+      if (!resolvedGender && resolvedEncounter.sex) resolvedGender = resolvedEncounter.sex
     }
+
     if ((resolvedAge === undefined || !resolvedGender || !dynamicDate) && (studyData.umr || studyData.mrn)) {
       try {
         const pat = db.getPatientByUmr(studyData.umr || studyData.mrn)
@@ -5234,8 +5476,17 @@ export class BillingDatabase {
       } catch {}
     }
     if (!resolvedOpNumber) {
-      resolvedOpNumber = `OP-${(studyData.umr || studyData.mrn || "1002").replace(/\D/g, "")}`
+      resolvedOpNumber = studyData.encounterId?.startsWith("OP-")
+        ? studyData.encounterId
+        : `OP-${(studyData.umr || studyData.mrn || "1002").replace(/\D/g, "")}`
     }
+
+    const invoiceNo =
+      studyData.invoiceNo && !studyData.invoiceNo.startsWith("INV-RAD-")
+        ? studyData.invoiceNo
+        : `INV-${resolvedOpNumber}`
+
+    const nowIso = new Date().toISOString()
     const todayStr = new Date().toISOString().split("T")[0]
     const effectiveDate = dynamicDate || todayStr
 
@@ -5273,23 +5524,7 @@ export class BillingDatabase {
     this.invalidateRadiologyStudiesCache()
 
     if (newStudy.paymentStatus === "Payment Pending") {
-      if (newStudy.encounterId) {
-        try {
-          const enc = db.getEncounterById(newStudy.encounterId)
-          if (enc) {
-            this.ensureConsolidatedInvestigationClaim({
-              encounter: enc,
-              radiologyStudies: [newStudy],
-            })
-          } else {
-            this.ensureRadiologyClaim(newStudy)
-          }
-        } catch {
-          this.ensureRadiologyClaim(newStudy)
-        }
-      } else {
-        this.ensureRadiologyClaim(newStudy)
-      }
+      this.ensureRadiologyClaim(newStudy)
     }
 
     try {
@@ -5305,7 +5540,10 @@ export class BillingDatabase {
     id: string,
     updates: Partial<RadiologyStudyRecord>,
   ): RadiologyStudyRecord {
-    const studies = this.getRadiologyStudies()
+    const studies = this.load<RadiologyStudyRecord[]>(
+      STORAGE_KEY_RAD_STUDIES,
+      INITIAL_RAD_STUDIES,
+    )
 
     const target = (id || "").trim().toLowerCase()
     let idx = studies.findIndex((s) => s.id && s.id.toLowerCase() === target)
@@ -7314,7 +7552,7 @@ export class BillingDatabase {
         ;(enc.investigations || []).forEach((inv, idx) => {
           const isRad =
             inv.toLowerCase().includes("x-ray") ||
-            inv.toLowerCase().includes("ct") ||
+            /\b(ct|ct scan|computed tomography|hrct|cect|ncct)\b/i.test(inv) ||
             inv.toLowerCase().includes("mri") ||
             inv.toLowerCase().includes("ultra")
 
@@ -7843,6 +8081,10 @@ export class BillingDatabase {
   }
 }
 
+if (typeof window !== "undefined") {
+  (window as any).BillingDatabase = BillingDatabase
+}
+
 export interface ErPricedItem {
   name: string
 
@@ -8160,7 +8402,7 @@ export function resolveErItemPrice(
         cptCode: "82803",
       }
 
-    if (norm.includes("ct") || norm.includes("computed tomography"))
+    if (/\b(ct|ct scan|computed tomography|hrct|cect|ncct)\b/i.test(norm))
       return {
         name: itemName,
         category: "Radiology / Imaging",

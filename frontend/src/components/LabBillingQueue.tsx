@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react"
-import { StatusBadge } from "./shared"
 import { LabOrder, LabOrderDatabase } from "../services/labOrdersDb"
-import { BillingDatabase, RadiologyStudyRecord, ClaimRecord, PaymentRecord } from "../services/billingDb"
+import { BillingDatabase, RadiologyStudyRecord, ClaimRecord, PaymentRecord, normalizeUmr, cleanEnc } from "../services/billingDb"
 import { RadiologyWorkflowDb, ExtendedRadiologyRecord } from "../services/radiologyWorkflowDb"
 import { AuditDatabase } from "../services/auditDb"
 import HospitalReceiptModal from "./HospitalReceiptModal"
@@ -9,12 +8,17 @@ import { BillingHeader, KpiTile } from "./billing/BillingChrome"
 import { FlaskConical, Hourglass, Activity, Layers, Search, CheckCircle2, ShieldCheck, Printer } from "lucide-react"
 
 /**
- * Common Unified Investigation Billing Queue:
- * Reception / Cashier side of the doctor -> investigation hand-off.
+ * Unified Patient-Wise Consolidated Investigation Billing Queue:
+ * Centralized Cashier Desk for Doctor -> Investigation Handoff.
  *
- * Dynamically retrieves eligible investigation orders from BOTH Laboratory and Radiology.
- * Preserves original department, order ID, patient ID, UMR, OP, encounter ID, and investigation details.
- * Collecting payment releases the order to the respective department worklist (Lab or Radiology).
+ * Consolidates ALL Laboratory and Radiology investigations belonging to the
+ * same patient and OP encounter into ONE single billing entry.
+ *
+ * - 1 Patient + 1 OP Encounter = 1 Consolidated Investigation Billing Entry.
+ * - Grouped by Patient UMR and OP / Encounter Number.
+ * - Displays both Laboratory and Radiology test breakdowns with individual charges.
+ * - Single payment collection settles all included investigations and issues one official receipt.
+ * - Updates Laboratory and Radiology department worklists independently upon settlement.
  */
 
 const PAYMENT_MODES: Array<"Cash" | "Card" | "UPI" | "Corporate"> = [
@@ -24,7 +28,7 @@ const PAYMENT_MODES: Array<"Cash" | "Card" | "UPI" | "Corporate"> = [
   "Corporate",
 ]
 
-export type UnifiedDepartment = "Laboratory" | "Radiology"
+export type UnifiedDepartment = "Laboratory" | "Radiology" | "Both"
 
 export interface UnifiedInvestigationItem {
   id: string
@@ -33,11 +37,13 @@ export interface UnifiedInvestigationItem {
   urgency?: string
   modality?: string
   room?: string
+  department: "Laboratory" | "Radiology"
 }
 
 export interface UnifiedInvestigationOrder {
-  id: string // Department order ID (LAB-..., RAD-...)
+  id: string // Consolidated identifier (e.g. CONSOL-OP-1001)
   department: UnifiedDepartment
+  departments: Array<"Laboratory" | "Radiology">
   patientName: string
   age?: number
   sex?: string
@@ -49,6 +55,8 @@ export interface UnifiedInvestigationOrder {
   consultingDepartment: string
   diagnosis?: string
   items: UnifiedInvestigationItem[]
+  labItems: UnifiedInvestigationItem[]
+  radItems: UnifiedInvestigationItem[]
   subtotal: number
   discount: number
   total: number
@@ -60,97 +68,231 @@ export interface UnifiedInvestigationOrder {
   invoiceNo?: string
   mode?: string
   collectedBy?: string
-  rawLabOrder?: LabOrder
-  rawRadiologyStudy?: ExtendedRadiologyRecord | RadiologyStudyRecord
+  rawLabOrders?: LabOrder[]
+  rawRadiologyStudies?: (ExtendedRadiologyRecord | RadiologyStudyRecord)[]
 }
 
-function labToUnified(order: LabOrder): UnifiedInvestigationOrder {
-  const isPaid = order.billing.status === "Paid"
-  return {
-    id: order.id,
-    department: "Laboratory",
-    patientName: order.patientName,
-    age: order.age,
-    sex: order.sex,
-    umr: order.umr,
-    opNumber: order.opNumber,
-    encounterId: order.encounterId,
-    phone: order.phone,
-    doctorName: order.doctorName,
-    consultingDepartment: order.department || "General Medicine",
-    diagnosis: order.diagnosis,
-    items: (order.tests || []).map((t) => ({
-      id: t.id,
-      name: t.name,
-      price: t.price || 0,
-      urgency: t.urgency,
-    })),
-    subtotal: order.billing.subtotal || (order.tests || []).reduce((acc, t) => acc + (t.price || 0), 0),
-    discount: order.billing.discount || 0,
-    total: order.billing.total || order.billing.subtotal || 0,
-    status: isPaid ? "Billed" : "Awaiting Billing",
-    paymentStatus: isPaid ? "Paid" : "Pending",
-    createdAt: order.createdAt || new Date().toISOString(),
-    paidAt: order.billing.paidAt,
-    receiptNo: order.billing.receiptNo,
-    invoiceNo: order.billing.invoiceNo,
-    mode: order.billing.mode,
-    collectedBy: order.billing.collectedBy,
-    rawLabOrder: order,
+interface GroupRecord {
+  umr: string
+  opNumber: string
+  encounterId?: string
+  patientName: string
+  age?: number
+  sex?: string
+  phone?: string
+  doctorName?: string
+  consultingDepartment?: string
+  diagnosis?: string
+  labOrders: LabOrder[]
+  radStudies: (ExtendedRadiologyRecord | RadiologyStudyRecord)[]
+}
+
+/**
+ * Consolidates all Laboratory orders and Radiology studies into unified, patient-encounter entries.
+ */
+function consolidateAllInvestigations(
+  labOrders: LabOrder[],
+  radStudies: (ExtendedRadiologyRecord | RadiologyStudyRecord)[],
+): { pending: UnifiedInvestigationOrder[]; settled: UnifiedInvestigationOrder[] } {
+  const groups = new Map<string, GroupRecord>()
+
+  // 1. Group Laboratory Orders by (Patient UMR, OP/Encounter)
+  labOrders.forEach((ord) => {
+    const umr = normalizeUmr(ord.umr) || (ord.patientName || "").trim().toUpperCase() || "UNKNOWN"
+    const enc = cleanEnc(ord.opNumber || ord.encounterId) || "STANDALONE"
+    const groupKey = `${umr}|${enc}`
+
+    const existing = groups.get(groupKey) || {
+      umr: ord.umr,
+      opNumber: ord.opNumber || (ord.encounterId?.startsWith("OP-") ? ord.encounterId : `OP-${ord.umr.replace(/\D/g, "")}`),
+      encounterId: ord.encounterId,
+      patientName: ord.patientName,
+      age: ord.age,
+      sex: ord.sex,
+      phone: ord.phone,
+      doctorName: ord.doctorName,
+      consultingDepartment: ord.department || "General Medicine",
+      diagnosis: ord.diagnosis,
+      labOrders: [],
+      radStudies: [],
+    }
+    existing.labOrders.push(ord)
+    if (!existing.doctorName && ord.doctorName) existing.doctorName = ord.doctorName
+    if (!existing.diagnosis && ord.diagnosis) existing.diagnosis = ord.diagnosis
+    groups.set(groupKey, existing)
+  })
+
+  // 2. Group Radiology Studies by (Patient UMR, OP/Encounter)
+  radStudies.forEach((rs) => {
+    const umr = normalizeUmr(rs.umr || (rs as any).mrn) || (rs.patient || "").trim().toUpperCase() || "UNKNOWN"
+    const enc = cleanEnc((rs as any).opNumber || rs.encounterId) || "STANDALONE"
+    const groupKey = `${umr}|${enc}`
+
+    const opNumber =
+      (rs as any).opNumber ||
+      (rs.encounterId?.startsWith("OP-") ? rs.encounterId : `OP-${(rs.umr || (rs as any).mrn || "1002").replace(/\D/g, "")}`)
+
+    const existing = groups.get(groupKey) || {
+      umr: rs.umr || (rs as any).mrn || "WALK-IN",
+      opNumber,
+      encounterId: rs.encounterId,
+      patientName: rs.patient,
+      age: (rs as any).age,
+      sex: (rs as any).gender,
+      phone: (rs as any).phone || "",
+      doctorName: rs.provider || "Attending Doctor",
+      consultingDepartment: rs.department || "Radiology",
+      diagnosis: rs.diagnosis || rs.indication,
+      labOrders: [],
+      radStudies: [],
+    }
+    existing.radStudies.push(rs)
+    if (!existing.doctorName && rs.provider) existing.doctorName = rs.provider
+    if (!existing.diagnosis && (rs.diagnosis || rs.indication)) existing.diagnosis = rs.diagnosis || rs.indication
+    groups.set(groupKey, existing)
+  })
+
+  // 3. Build Unified Consolidated Billing Entries
+  const pending: UnifiedInvestigationOrder[] = []
+  const settled: UnifiedInvestigationOrder[] = []
+
+  groups.forEach((group) => {
+    const labItems: UnifiedInvestigationItem[] = []
+    const radItems: UnifiedInvestigationItem[] = []
+
+    // Deduplicate Laboratory test items
+    group.labOrders.forEach((ord) => {
+      (ord.tests || []).forEach((t, idx) => {
+        const exists = labItems.some(
+          (it) => it.id === t.id || it.name.toLowerCase().trim() === t.name.toLowerCase().trim()
+        )
+        if (!exists) {
+          labItems.push({
+            id: t.id || `ITEM-LAB-${ord.id}-${idx + 1}`,
+            name: t.name,
+            price: t.price || 0,
+            urgency: t.urgency,
+            department: "Laboratory",
+          })
+        }
+      })
+    })
+
+    // Deduplicate Radiology study items
+    group.radStudies.forEach((rs) => {
+      const cleanStudyName = (rs.study || "Radiology Scan").replace(/\s*\([^)]*\)$/, "")
+      const exists = radItems.some(
+        (it) =>
+          it.id === rs.id ||
+          it.name.toLowerCase().trim() === cleanStudyName.toLowerCase().trim() ||
+          it.name.toLowerCase().trim() === (rs.study || "").toLowerCase().trim()
+      )
+      if (!exists) {
+        radItems.push({
+          id: rs.id,
+          name: cleanStudyName,
+          price: rs.price || 500,
+          urgency: rs.priority,
+          modality: rs.modality,
+          room: rs.room,
+          department: "Radiology",
+        })
+      }
+    })
+
+    const allItems = [...labItems, ...radItems]
+    if (allItems.length === 0) return
+
+    const subtotal = allItems.reduce((acc, it) => acc + (it.price || 0), 0)
+    const hasLab = labItems.length > 0
+    const hasRad = radItems.length > 0
+    const department: UnifiedDepartment = hasLab && hasRad ? "Both" : hasLab ? "Laboratory" : "Radiology"
+
+    // Accurate settlement check: An investigation order is ONLY settled if ALL lab orders AND all rad studies are paid
+    const isLabSettled = group.labOrders.length === 0 || group.labOrders.every((o) => o.billing?.status === "Paid")
+    const isRadSettled = group.radStudies.length === 0 || group.radStudies.every(
+      (s) =>
+        s.isPaid ||
+        s.paymentStatus === "Paid" ||
+        (s.paymentStatusDisplay || "").toUpperCase() === "PAID" ||
+        s.billingStatus === "Authorized Exception" ||
+        Boolean((s as any).authorizedException)
+    )
+    const isPaid = isLabSettled && isRadSettled && allItems.length > 0
+
+    const receiptNo =
+      group.radStudies.find((s) => s.paidReceiptNo)?.paidReceiptNo ||
+      group.labOrders.find((o) => o.billing?.receiptNo)?.billing?.receiptNo ||
+      (isPaid ? `RCPT-2026-${group.opNumber.replace(/\D/g, "").slice(-4) || "5501"}` : undefined)
+
+    const paidAt =
+      group.radStudies.find((s) => s.paidAt)?.paidAt ||
+      group.labOrders.find((o) => o.billing?.paidAt)?.billing?.paidAt ||
+      (isPaid ? new Date().toISOString() : undefined)
+
+    const invoiceNo =
+      group.radStudies.find((s) => s.invoiceNo && !s.invoiceNo.startsWith("INV-RAD-"))?.invoiceNo ||
+      group.labOrders.find((o) => o.billing?.invoiceNo)?.billing?.invoiceNo ||
+      `INV-${group.opNumber}`
+
+    // Representative ID for this consolidated entry
+    const id = `CONSOL-${group.opNumber || group.encounterId || group.umr}`
+
+    // Oldest creation date among included items
+    const createdDates = [
+      ...group.labOrders.map((o) => o.createdAt),
+      ...group.radStudies.map((s) => (s as any).createdAt || s.orderedAt || s.ordered),
+    ].filter(Boolean)
+    const createdAt = createdDates.sort()[0] || new Date().toISOString()
+
+    const entry: UnifiedInvestigationOrder = {
+      id,
+      department,
+      departments: [...(hasLab ? (["Laboratory"] as const) : []), ...(hasRad ? (["Radiology"] as const) : [])],
+      patientName: group.patientName,
+      age: group.age,
+      sex: group.sex,
+      umr: group.umr,
+      opNumber: group.opNumber,
+      encounterId: group.encounterId,
+      phone: group.phone,
+      doctorName: group.doctorName || "Attending Specialist",
+      consultingDepartment: group.consultingDepartment || "General Medicine",
+      diagnosis: group.diagnosis,
+      items: allItems,
+      labItems,
+      radItems,
+      subtotal,
+      discount: 0,
+      total: subtotal,
+      status: isPaid ? "Billed" : "Awaiting Billing",
+      paymentStatus: isPaid ? "Paid" : "Pending",
+      createdAt,
+      paidAt,
+      receiptNo,
+      invoiceNo,
+      mode: isPaid ? "Cash" : undefined,
+      collectedBy: "Reception",
+      rawLabOrders: group.labOrders,
+      rawRadiologyStudies: group.radStudies,
+    }
+
+    if (isPaid) {
+      settled.push(entry)
+    } else {
+      pending.push(entry)
+    }
+  })
+
+  const sorter = (a: UnifiedInvestigationOrder, b: UnifiedInvestigationOrder) => {
+    const timeB = new Date(b.createdAt || 0).getTime()
+    const timeA = new Date(a.createdAt || 0).getTime()
+    return timeB - timeA || b.id.localeCompare(a.id)
   }
-}
-
-function radToUnified(study: ExtendedRadiologyRecord | RadiologyStudyRecord): UnifiedInvestigationOrder {
-  const isPaid = Boolean(
-    study.isPaid ||
-    study.paymentStatus === "Paid" ||
-    (study.paymentStatusDisplay || "").toUpperCase() === "PAID" ||
-    (study as any).billingStatus === "Cleared / Paid" ||
-    study.paidReceiptNo
-  )
-  const price = study.price || 500
-  const opNumber =
-    (study as any).opNumber ||
-    (study.encounterId?.startsWith("OP-") ? study.encounterId : `OP-${(study.umr || study.mrn || "1002").replace(/\D/g, "")}`)
-  const receiptNo =
-    study.paidReceiptNo ||
-    (isPaid ? `RCPT-2026-${(study.invoiceNo || study.id || "").replace(/\D/g, "").slice(-4) || "5501"}` : undefined)
 
   return {
-    id: study.id,
-    department: "Radiology",
-    patientName: study.patient,
-    age: (study as any).age,
-    sex: (study as any).gender,
-    umr: study.umr || study.mrn,
-    opNumber,
-    encounterId: study.encounterId,
-    phone: "",
-    doctorName: study.provider || "Attending Doctor",
-    consultingDepartment: study.department || "Radiology",
-    diagnosis: study.diagnosis || study.indication,
-    items: [
-      {
-        id: study.id,
-        name: `${study.study} (${study.modality})`,
-        price,
-        urgency: study.priority,
-        modality: study.modality,
-        room: study.room,
-      },
-    ],
-    subtotal: price,
-    discount: 0,
-    total: price,
-    status: isPaid ? "Billed" : "Awaiting Billing",
-    paymentStatus: isPaid ? "Paid" : "Pending",
-    createdAt: study.orderedAt || (study as any).createdAt || study.ordered || new Date().toISOString(),
-    paidAt: study.paidAt || study.billingClearedAt,
-    receiptNo,
-    invoiceNo: study.invoiceNo,
-    mode: (study as any).paymentMethod || "UPI / Digital",
-    collectedBy: (study as any).collectedBy || "Reception",
-    rawRadiologyStudy: study,
+    pending: pending.sort(sorter),
+    settled: settled.sort(sorter),
   }
 }
 
@@ -182,58 +324,29 @@ export default function LabBillingQueue({
     }
   }, [])
 
-  // 1. Retrieve Orders from BOTH Laboratory and Radiology
-  const rawLabOrders = useMemo(() => LabOrderDatabase.getOrders(), [tick])
-  const rawLabQueue = useMemo(() => LabOrderDatabase.getBillingQueue(), [tick])
-  const rawRadStudies = useMemo(() => RadiologyWorkflowDb.getStudies(), [tick])
-
-  const pendingLab = useMemo(() => rawLabQueue.map(labToUnified), [rawLabQueue])
-  const pendingRad = useMemo(
-    () =>
-      rawRadStudies
-        .filter((s) => !s.isPaid && s.paymentStatus !== "Paid" && (s.paymentStatusDisplay || "").toUpperCase() !== "PAID" && s.billingStatus !== "Authorized Exception")
-        .map(radToUnified),
-    [rawRadStudies]
+  // 1. Retrieve Raw Orders from BOTH Laboratory and Radiology
+  const rawLabOrders = useMemo(
+    () => LabOrderDatabase.getOrders().filter((o) => o.status !== "Cancelled"),
+    [tick]
+  )
+  const rawRadStudies = useMemo(
+    () => RadiologyWorkflowDb.getStudies().filter((s) => s.status !== "Cancelled"),
+    [tick]
   )
 
-  const settledLab = useMemo(
-    () => rawLabOrders.filter((o) => o.billing?.status === "Paid").map(labToUnified),
-    [rawLabOrders]
+  // 2. Consolidate into unified patient-encounter entries
+  const { pending: allPending, settled: allSettled } = useMemo(
+    () => consolidateAllInvestigations(rawLabOrders, rawRadStudies),
+    [rawLabOrders, rawRadStudies]
   )
-  const settledRad = useMemo(
-    () =>
-      rawRadStudies
-        .filter((s) => s.isPaid || s.paymentStatus === "Paid" || (studyPaymentUpper(s) === "PAID") || s.billingStatus === "Authorized Exception")
-        .map(radToUnified),
-    [rawRadStudies]
-  )
-
-  function studyPaymentUpper(s: any): string {
-    return (s.paymentStatusDisplay || "").toUpperCase()
-  }
-
-  const allPending = useMemo(() => {
-    return [...pendingLab, ...pendingRad].sort((a, b) => {
-      const timeB = new Date(b.createdAt || 0).getTime()
-      const timeA = new Date(a.createdAt || 0).getTime()
-      return timeB - timeA || b.id.localeCompare(a.id)
-    })
-  }, [pendingLab, pendingRad])
-
-  const allSettled = useMemo(() => {
-    return [...settledLab, ...settledRad].sort((a, b) => {
-      const timeB = new Date(b.paidAt || b.createdAt || 0).getTime()
-      const timeA = new Date(a.paidAt || a.createdAt || 0).getTime()
-      return timeB - timeA || b.id.localeCompare(a.id)
-    })
-  }, [settledLab, settledRad])
 
   const currentDataset = view === "pending" ? allPending : allSettled
 
   const filteredList = useMemo(() => {
     const q = searchQuery.toLowerCase().trim()
     return currentDataset.filter((order) => {
-      if (deptFilter !== "All" && order.department !== deptFilter) return false
+      if (deptFilter === "Laboratory" && order.labItems.length === 0) return false
+      if (deptFilter === "Radiology" && order.radItems.length === 0) return false
       if (q) {
         const matches =
           order.patientName.toLowerCase().includes(q) ||
@@ -257,6 +370,7 @@ export default function LabBillingQueue({
     setDiscount(0)
   }, [selected?.id])
 
+  // Single-action payment collection for the entire consolidated investigation bill
   const collect = async () => {
     if (!selected || selected.paymentStatus === "Paid" || collecting) return
     setCollectError(null)
@@ -265,116 +379,111 @@ export default function LabBillingQueue({
     const nowIso = new Date().toISOString()
     const numericDiscount = Math.max(0, Math.min(Number(discount) || 0, selected.subtotal))
     const totalToPay = Math.max(0, selected.subtotal - numericDiscount)
+    const receiptNo = `RCPT-2026-${Math.floor(1000 + Math.random() * 9000)}`
 
     try {
-      if (selected.department === "Laboratory") {
-        // Laboratory Workflow Payment Settlement
-        const updatedLab = await LabOrderDatabase.markBilled(selected.id, {
-          mode: mode as any,
-          discount: numericDiscount,
+      // 1. Settle all included Laboratory orders independently
+      if (selected.rawLabOrders && selected.rawLabOrders.length > 0) {
+        for (const labOrder of selected.rawLabOrders) {
+          try {
+            await LabOrderDatabase.markBilled(labOrder.id, {
+              mode: mode as any,
+              discount: 0,
+              collectedBy,
+            })
+          } catch (err) {
+            console.warn(`Could not update lab order ${labOrder.id}:`, err)
+          }
+        }
+      }
+
+      // 2. Settle all included Radiology studies independently
+      if (selected.rawRadiologyStudies && selected.rawRadiologyStudies.length > 0) {
+        for (const study of selected.rawRadiologyStudies) {
+          try {
+            BillingDatabase.updateRadiologyStudy(study.id, {
+              paymentStatus: "Paid",
+              paymentStatusDisplay: "PAID",
+              isPaid: true,
+              paidReceiptNo: receiptNo,
+              paidAt: nowIso,
+              billingClearedAt: nowIso,
+              eligibleAt: nowIso,
+              billingStatus: "Cleared / Paid",
+              normalizedStatus: "ORDERED",
+            })
+          } catch (err) {
+            console.warn(`Could not update radiology study ${study.id}:`, err)
+          }
+        }
+      }
+
+      // 3. Settle consolidated claim in Centralized Billing POS
+      try {
+        BillingDatabase.recordPayment(selected.invoiceNo || `CLM-${selected.encounterId || selected.id}`, {
+          amount: totalToPay,
+          paymentMethod: mode === "Cash" ? "Cash" : mode === "Card" ? "Debit Card" : "UPI / Digital",
+          transactionRef: `TXN-${Date.now().toString().slice(-6)}`,
           collectedBy,
+          notes: `Consolidated investigation payment settled at Reception Desk.`,
         })
-        if (!updatedLab) throw new Error("Could not update Laboratory order in database.")
-
-        // Sync with centralized billing
+      } catch {
+        // Fallback match in central claims
         try {
-          BillingDatabase.recordPayment(updatedLab.billing.invoiceNo || selected.id, {
-            amount: updatedLab.billing.total,
-            paymentMethod: mode === "Cash" ? "Cash" : mode === "Card" ? "Debit Card" : "UPI / Digital",
-            collectedBy,
-            notes: `Laboratory investigation payment settled at Reception Desk.`,
-          })
-        } catch {}
-
-        AuditDatabase.logEvent(
-          "Lab Order Billed",
-          "Billing",
-          `${collectedBy} collected ₹${updatedLab.billing.total.toLocaleString("en-IN")} (${mode}) for ${updatedLab.id} — ` +
-            `${updatedLab.tests.length} test(s) for ${updatedLab.patientName} (${updatedLab.umr}) released to Laboratory.`,
-          "Success",
-        )
-
-        const unifiedReceipt = labToUnified(updatedLab)
-        setReceipt(unifiedReceipt)
-        setShowReceiptModal(true)
-      } else {
-        // Radiology Workflow Payment Settlement
-        const receiptNo = `RCPT-2026-${Math.floor(1000 + Math.random() * 9000)}`
-
-        // 1. Update Radiology Study in BillingDatabase
-        const updatedStudy = BillingDatabase.updateRadiologyStudy(selected.id, {
-          paymentStatus: "Paid",
-          paymentStatusDisplay: "PAID",
-          isPaid: true,
-          paidReceiptNo: receiptNo,
-          paidAt: nowIso,
-          billingClearedAt: nowIso,
-          eligibleAt: nowIso,
-          billingStatus: "Cleared / Paid",
-          normalizedStatus: "ORDERED",
-          price: totalToPay,
-        })
-
-        // 2. Synchronize with Central Claims
-        try {
-          BillingDatabase.recordPayment(selected.invoiceNo || selected.id, {
-            amount: totalToPay,
-            paymentMethod: mode === "Cash" ? "Cash" : mode === "Card" ? "Debit Card" : "UPI / Digital",
-            transactionRef: `TXN-${Date.now().toString().slice(-6)}`,
-            collectedBy,
-            notes: `Radiology investigation payment settled at Cashier Desk.`,
-          })
-        } catch {
-          // Check matching claims
           const claims = BillingDatabase.getClaims()
           const matching = claims.find(
             (c) =>
               c.invoiceNo === selected.invoiceNo ||
               c.id === `CLM-${selected.id}` ||
-              (selected.encounterId && c.encounterId === selected.encounterId)
+              (selected.encounterId && c.encounterId === selected.encounterId) ||
+              (selected.opNumber && c.encounterId === selected.opNumber)
           )
           if (matching) {
             BillingDatabase.recordPayment(matching.id, {
               amount: totalToPay,
               paymentMethod: mode === "Cash" ? "Cash" : mode === "Card" ? "Debit Card" : "UPI / Digital",
               collectedBy,
-              notes: `Radiology investigation payment settled.`,
+              notes: `Consolidated investigation payment settled.`,
             })
           }
-        }
-
-        // 3. Trigger immediate updates
-        try {
-          new BroadcastChannel("hospai_rad_channel").postMessage("changed")
         } catch {}
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent("hospai_rad_workflow_updated"))
-        }
-
-        AuditDatabase.logEvent(
-          "Radiology Order Billed",
-          "Billing",
-          `${collectedBy} collected ₹${totalToPay.toLocaleString("en-IN")} (${mode}) for ${selected.id} — ` +
-            `Radiology study ${selected.items[0]?.name || selected.id} for ${selected.patientName} (${selected.umr}) released for scanning. Receipt: ${receiptNo}.`,
-          "Success",
-        )
-
-        const unifiedReceipt: UnifiedInvestigationOrder = {
-          ...selected,
-          status: "Billed",
-          paymentStatus: "Paid",
-          discount: numericDiscount,
-          total: totalToPay,
-          paidAt: nowIso,
-          receiptNo,
-          mode,
-          collectedBy,
-          rawRadiologyStudy: updatedStudy || selected.rawRadiologyStudy,
-        }
-
-        setReceipt(unifiedReceipt)
-        setShowReceiptModal(true)
       }
+
+      // 4. Trigger cross-department broadcast channels
+      try {
+        new BroadcastChannel("hospai_rad_channel").postMessage("changed")
+      } catch {}
+      try {
+        new BroadcastChannel("hospai_lab_orders").postMessage("changed")
+      } catch {}
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("hospai_rad_workflow_updated"))
+      }
+
+      AuditDatabase.logEvent(
+        "Consolidated Investigations Billed",
+        "Billing",
+        `${collectedBy} collected ₹${totalToPay.toLocaleString("en-IN")} (${mode}) for ${selected.patientName} (${selected.umr}, ${selected.opNumber}) — ` +
+          `${selected.items.length} investigation(s) [${selected.labItems.length} Lab, ${selected.radItems.length} Rad] released to respective departments. Receipt: ${receiptNo}.`,
+        "Success",
+      )
+
+      const unifiedReceipt: UnifiedInvestigationOrder = {
+        ...selected,
+        status: "Billed",
+        paymentStatus: "Paid",
+        discount: numericDiscount,
+        total: totalToPay,
+        paidAt: nowIso,
+        receiptNo,
+        mode,
+        collectedBy,
+      }
+
+      setReceipt(unifiedReceipt)
+      setShowReceiptModal(true)
+      setView("settled")
+      setSelectedId(unifiedReceipt.id)
     } catch (error) {
       setCollectError(
         error instanceof Error
@@ -388,8 +497,8 @@ export default function LabBillingQueue({
   }
 
   const pendingTotal = allPending.reduce((sum, order) => sum + order.total, 0)
-  const pendingLabCount = pendingLab.length
-  const pendingRadCount = pendingRad.length
+  const pendingLabCount = allPending.filter((o) => o.labItems.length > 0).length
+  const pendingRadCount = allPending.filter((o) => o.radItems.length > 0).length
 
   return (
     <div className="flex-1 overflow-y-auto bg-[#F1F5F9]">
@@ -413,14 +522,14 @@ export default function LabBillingQueue({
           icon={FlaskConical}
           label="Laboratory Awaiting"
           value={pendingLabCount}
-          sub="Diagnostic lab tests"
+          sub="Patients with diagnostic lab tests"
         />
         <KpiTile
           tone="purple"
           icon={Activity}
           label="Radiology Awaiting"
           value={pendingRadCount}
-          sub="Imaging studies held for payment"
+          sub="Patients with imaging studies held"
         />
         <KpiTile
           tone="emerald"
@@ -449,6 +558,7 @@ export default function LabBillingQueue({
             <button
               key={tab.key}
               type="button"
+              data-inv-tab={tab.key}
               onClick={() => {
                 setView(tab.key)
                 setSelectedId(null)
@@ -481,7 +591,11 @@ export default function LabBillingQueue({
                     : "text-[#64748B] hover:text-[#0F172A]"
                 }`}
               >
-                {dept === "All" ? `All (${currentDataset.length})` : dept === "Laboratory" ? `Laboratory (${currentDataset.filter(d => d.department === "Laboratory").length})` : `Radiology (${currentDataset.filter(d => d.department === "Radiology").length})`}
+                {dept === "All"
+                  ? `All (${currentDataset.length})`
+                  : dept === "Laboratory"
+                    ? `Laboratory (${currentDataset.filter((d) => d.labItems.length > 0).length})`
+                    : `Radiology (${currentDataset.filter((d) => d.radItems.length > 0).length})`}
               </button>
             ))}
           </div>
@@ -506,8 +620,7 @@ export default function LabBillingQueue({
             <span className="font-mono font-bold">{receipt.receiptNo}</span>
             , ₹{receipt.total.toLocaleString("en-IN")} for{" "}
             <span className="font-semibold">{receipt.patientName}</span>.{" "}
-            <span className="font-mono font-bold text-slate-800">{receipt.id}</span>{" "}
-            is now cleared for {receipt.department === "Radiology" ? "scanning in Radiology Operations" : "processing in Laboratory"}.
+            All {receipt.items.length} investigations released to respective departments.
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -529,14 +642,14 @@ export default function LabBillingQueue({
       )}
 
       <div className="px-5 pb-5 pt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Left: Investigation Orders List */}
-        <div className="lg:col-span-2 bg-white border border-[#DDE2EC] rounded">
+        {/* Left: Investigation Orders List (1 Patient + 1 Encounter = 1 Entry) */}
+        <div data-inv-queue className="lg:col-span-2 bg-white border border-[#DDE2EC] rounded">
           <div className="px-4 py-2.5 border-b border-[#DDE2EC] flex items-center justify-between">
             <h2 className="text-[13px] font-bold text-gray-900 flex items-center gap-2">
               <span>{view === "pending" ? "Investigations Awaiting Payment" : "Settled Investigations"}</span>
-              <span className="text-[11px] font-normal text-slate-500">({filteredList.length} orders)</span>
+              <span className="text-[11px] font-normal text-slate-500">({filteredList.length} patient bills)</span>
             </h2>
-            <span className="text-[11px] text-[#64748B]">Click order to review &amp; collect</span>
+            <span className="text-[11px] text-[#64748B]">Click bill to review &amp; collect</span>
           </div>
 
           {filteredList.length === 0 ? (
@@ -555,7 +668,6 @@ export default function LabBillingQueue({
             <div className="divide-y divide-[#F1F5F9] max-h-[600px] overflow-y-auto">
               {filteredList.map((order) => {
                 const isSelected = selected?.id === order.id
-                const isRad = order.department === "Radiology"
                 const hasStat = order.items.some((it) => it.urgency === "STAT")
 
                 return (
@@ -567,66 +679,53 @@ export default function LabBillingQueue({
                       isSelected ? "bg-[#EFF6FF] border-l-4 border-l-[#1B4FD8]" : "hover:bg-[#F8FAFC]"
                     }`}
                   >
-                    <div className="flex items-start justify-between gap-3 flex-wrap">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span
-                            className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
-                              isRad
-                                ? "bg-purple-50 text-purple-700 border-purple-200"
-                                : "bg-emerald-50 text-emerald-700 border-emerald-200"
-                            }`}
-                          >
-                            {isRad ? "☢️ Radiology" : "🔬 Laboratory"}
+                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                      <div className="flex items-center gap-2.5 flex-wrap min-w-0">
+                        {order.department === "Both" ? (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-blue-50 text-blue-700 border-blue-200 shrink-0">
+                            🔬 Lab + ☢️ Rad
                           </span>
-                          <span className="font-bold text-[13px] text-gray-900">
-                            {order.patientName}
+                        ) : order.department === "Radiology" ? (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-purple-50 text-purple-700 border-purple-200 shrink-0">
+                            ☢️ Radiology
                           </span>
-                          {(order.age || order.sex) && (
-                            <span className="text-[11px] text-slate-500">
-                              ({order.age ? `${order.age} Y` : ""}{order.age && order.sex ? " · " : ""}{order.sex || ""})
-                            </span>
-                          )}
-                          <span className="text-[11px] font-mono text-[#64748B]">
-                            UMR: {order.umr} · {order.opNumber}
+                        ) : (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200 shrink-0">
+                            🔬 Laboratory
                           </span>
-                          {hasStat && (
-                            <span className="text-[9.5px] font-bold bg-[#FEE2E2] text-[#B91C1C] px-1.5 py-0.2 rounded border border-[#FECACA] animate-pulse">
-                              STAT
-                            </span>
-                          )}
-                        </div>
+                        )}
 
-                        <div className="text-[11.5px] text-[#64748B] mt-0.5 flex items-center gap-1.5 flex-wrap">
-                          <span className="font-medium text-slate-800">Dr. {order.doctorName}</span>
-                          <span>• {order.consultingDepartment}</span>
-                          {order.diagnosis && <span>• {order.diagnosis}</span>}
-                        </div>
+                        <span className="font-bold text-[13.5px] text-gray-900">
+                          {order.patientName}
+                        </span>
 
-                        <div className="text-[12px] font-semibold text-[#1E293B] mt-1 flex items-center gap-1.5 flex-wrap">
-                          <span>Investigations:</span>
-                          <span className="text-[#1B4FD8]">{order.items.map((it) => it.name).join(" · ")}</span>
-                        </div>
+                        {(order.age || order.sex) && (
+                          <span className="text-[11.5px] text-slate-500 font-medium">
+                            ({order.age ? `${order.age} Y` : ""}{order.age && order.sex ? " · " : ""}{order.sex || ""})
+                          </span>
+                        )}
+
+                        <span className="text-[11.5px] font-mono text-[#64748B]">
+                          UMR: {order.umr}
+                        </span>
+
+                        {hasStat && (
+                          <span className="text-[9.5px] font-bold bg-[#FEE2E2] text-[#B91C1C] px-1.5 py-0.2 rounded border border-[#FECACA] animate-pulse">
+                            STAT
+                          </span>
+                        )}
                       </div>
 
-                      <div className="text-right flex-shrink-0">
-                        <div className="text-[14px] font-bold text-gray-900 font-mono">
-                          ₹{order.total.toLocaleString("en-IN")}
-                        </div>
-                        <div className="text-[10.5px] text-blue-700 font-mono font-bold mt-0.5">
-                          {order.id}
-                        </div>
-                        <div className="mt-1">
-                          {order.paymentStatus === "Paid" ? (
-                            <span className="text-[10px] font-bold px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded">
-                              ✓ PAID
-                            </span>
-                          ) : (
-                            <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-800 border border-amber-300 rounded">
-                              ⏳ AWAITING BILLING
-                            </span>
-                          )}
-                        </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {order.paymentStatus === "Paid" ? (
+                          <span className="text-[10px] font-bold px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded">
+                            ✓ PAID
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-800 border border-amber-300 rounded">
+                            ⏳ AWAITING BILLING
+                          </span>
+                        )}
                       </div>
                     </div>
                   </button>
@@ -643,22 +742,25 @@ export default function LabBillingQueue({
               <div className="px-4 py-2.5 border-b border-[#DDE2EC] flex items-center justify-between">
                 <div>
                   <h2 className="text-[13px] font-bold text-gray-900">
-                    {selected.paymentStatus === "Paid" ? "Official Receipt" : "Collect Investigation Payment"}
+                    {selected.paymentStatus === "Paid" ? "Official Receipt" : "Consolidated Investigation Bill"}
                   </h2>
                   <p className="text-[11px] text-[#64748B] font-mono mt-0.5">
-                    Order Ref: <span className="font-bold text-[#1B4FD8]">{selected.id}</span>
-                    {selected.invoiceNo && ` · ${selected.invoiceNo}`}
+                    Invoice: <span className="font-bold text-[#1B4FD8]">{selected.invoiceNo || selected.opNumber}</span>
                   </p>
                 </div>
-                <span
-                  className={`text-[10.5px] font-bold px-2 py-0.5 rounded border ${
-                    selected.department === "Radiology"
-                      ? "bg-purple-50 text-purple-700 border-purple-200"
-                      : "bg-emerald-50 text-emerald-700 border-emerald-200"
-                  }`}
-                >
-                  {selected.department}
-                </span>
+                {selected.department === "Both" ? (
+                  <span className="text-[10.5px] font-bold px-2 py-0.5 rounded border bg-blue-50 text-blue-700 border-blue-200">
+                    Lab + Radiology
+                  </span>
+                ) : selected.department === "Radiology" ? (
+                  <span className="text-[10.5px] font-bold px-2 py-0.5 rounded border bg-purple-50 text-purple-700 border-purple-200">
+                    Radiology
+                  </span>
+                ) : (
+                  <span className="text-[10.5px] font-bold px-2 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200">
+                    Laboratory
+                  </span>
+                )}
               </div>
 
               <div className="p-4 space-y-3">
@@ -678,29 +780,72 @@ export default function LabBillingQueue({
                   ))}
                 </div>
 
-                {/* Items Breakdown */}
-                <div className="space-y-1 border-t border-slate-100 pt-2">
-                  <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">
-                    Ordered {selected.department} Tests / Studies:
-                  </div>
-                  {selected.items.map((item, idx) => (
-                    <div
-                      key={item.id || idx}
-                      className="flex justify-between gap-3 text-[12px] py-1 border-b border-[#F8FAFC] last:border-0"
-                    >
-                      <span className="text-[#475569] font-medium flex items-center gap-1">
-                        <span>{item.name}</span>
-                        {item.urgency === "STAT" && (
-                          <span className="text-[#DC2626] font-bold text-[9.5px] bg-red-50 border border-red-200 px-1 rounded">
-                            STAT
+                {/* Department-Wise Investigations Breakdown */}
+                <div className="space-y-3 border-t border-slate-100 pt-2">
+                  {/* Laboratory Tests */}
+                  {selected.labItems && selected.labItems.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-800 bg-emerald-50 px-2 py-1 rounded border border-emerald-200 flex items-center justify-between">
+                        <span className="flex items-center gap-1.5">
+                          <FlaskConical size={12} /> Laboratory ({selected.labItems.length})
+                        </span>
+                        <span className="font-mono">
+                          ₹{selected.labItems.reduce((s, i) => s + i.price, 0).toLocaleString("en-IN")}
+                        </span>
+                      </div>
+                      {selected.labItems.map((item, idx) => (
+                        <div
+                          key={item.id || idx}
+                          className="flex justify-between gap-3 text-[12px] py-1 px-1 border-b border-[#F8FAFC] last:border-0"
+                        >
+                          <span className="text-[#475569] font-medium flex items-center gap-1">
+                            <span>{item.name}</span>
+                            {item.urgency === "STAT" && (
+                              <span className="text-[#DC2626] font-bold text-[9.5px] bg-red-50 border border-red-200 px-1 rounded">
+                                STAT
+                              </span>
+                            )}
                           </span>
-                        )}
-                      </span>
-                      <span className="font-mono text-gray-900 font-semibold">
-                        ₹{item.price.toLocaleString("en-IN")}
-                      </span>
+                          <span className="font-mono text-gray-900 font-semibold">
+                            ₹{item.price.toLocaleString("en-IN")}
+                          </span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
+
+                  {/* Radiology Studies */}
+                  {selected.radItems && selected.radItems.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="text-[11px] font-bold uppercase tracking-wider text-purple-800 bg-purple-50 px-2 py-1 rounded border border-purple-200 flex items-center justify-between">
+                        <span className="flex items-center gap-1.5">
+                          <Activity size={12} /> Radiology ({selected.radItems.length})
+                        </span>
+                        <span className="font-mono">
+                          ₹{selected.radItems.reduce((s, i) => s + i.price, 0).toLocaleString("en-IN")}
+                        </span>
+                      </div>
+                      {selected.radItems.map((item, idx) => (
+                        <div
+                          key={item.id || idx}
+                          className="flex justify-between gap-3 text-[12px] py-1 px-1 border-b border-[#F8FAFC] last:border-0"
+                        >
+                          <span className="text-[#475569] font-medium flex items-center gap-1">
+                            <span>{item.name}</span>
+                            {item.urgency === "STAT" && (
+                              <span className="text-[#DC2626] font-bold text-[9.5px] bg-red-50 border border-red-200 px-1 rounded">
+                                STAT
+                              </span>
+                            )}
+                            {item.room && <span className="text-[10.5px] text-slate-500 font-mono">({item.room})</span>}
+                          </span>
+                          <span className="font-mono text-gray-900 font-semibold">
+                            ₹{item.price.toLocaleString("en-IN")}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {selected.paymentStatus === "Paid" ? (
@@ -736,8 +881,8 @@ export default function LabBillingQueue({
                 ) : (
                   <>
                     <div className="flex justify-between text-[12px] pt-1 border-t border-[#E2E8F0]">
-                      <span className="text-[#64748B]">Subtotal</span>
-                      <span className="font-mono text-gray-900">
+                      <span className="text-[#64748B]">Combined Subtotal</span>
+                      <span className="font-mono text-gray-900 font-semibold">
                         ₹{selected.subtotal.toLocaleString("en-IN")}
                       </span>
                     </div>
@@ -802,30 +947,22 @@ export default function LabBillingQueue({
 
                     <button
                       type="button"
-                      onClick={collect}
                       disabled={collecting}
-                      className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 border border-emerald-700 text-white text-[13px] font-bold cursor-pointer transition-colors shadow-2xs disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
+                      onClick={collect}
+                      className="w-full py-2.5 bg-[#1B4FD8] hover:bg-[#1540B2] disabled:opacity-50 text-white font-bold rounded text-xs cursor-pointer shadow-xs transition-colors flex items-center justify-center gap-2"
                     >
-                      {collecting ? (
-                        <span>Processing Payment…</span>
-                      ) : (
-                        <span>
-                          Collect Payment &amp; Release to {selected.department === "Radiology" ? "Radiology" : "Laboratory"}
-                        </span>
-                      )}
+                      <CheckCircle2 className="w-4 h-4" />
+                      {collecting
+                        ? "Collecting & Clearing..."
+                        : `Collect Payment (₹${Math.max(0, selected.subtotal - (Number(discount) || 0)).toLocaleString("en-IN")}) & Release`}
                     </button>
-                    <p className="text-[11px] text-[#94A3B8] text-center">
-                      Departmental worklists strictly gate operations until payment is settled by the Cashier.
-                    </p>
                   </>
                 )}
               </div>
             </div>
           ) : (
-            <div className="bg-white border border-[#DDE2EC] rounded p-6 text-center">
-              <p className="text-[12.5px] text-[#94A3B8]">
-                Select an investigation order to review and collect payment.
-              </p>
+            <div className="p-8 bg-white border border-[#DDE2EC] rounded text-center text-[#64748B] text-[12.5px]">
+              Select an investigation bill on the left to review details and collect payment.
             </div>
           )}
         </div>
@@ -841,14 +978,15 @@ export default function LabBillingQueue({
 
         const claimObj: ClaimRecord = {
           id: `CLM-${active.id}`,
-          invoiceNo: active.invoiceNo || `INV-${active.department === "Radiology" ? "RAD" : "LAB"}-${active.id.replace(/\D/g, "").slice(-5) || "5501"}`,
+          invoiceNo: active.invoiceNo || `INV-${active.opNumber}`,
           patientId: active.umr,
           patientName: active.patientName,
           mrn: active.umr,
           age: active.age || 35,
           gender: active.sex === "Female" ? "Female" : "Male",
           phone: active.phone || "",
-          department: active.department as any,
+          department: (active.department === "Both" ? "Outpatient" : active.department) as any,
+          carePathway: active.department === "Both" ? "Laboratory & Radiology Investigations" : active.department === "Radiology" ? "Radiology Imaging" : "Laboratory Diagnostics",
           dateOfService: active.createdAt ? active.createdAt.split("T")[0] : new Date().toISOString().split("T")[0],
           encounterId: active.opNumber || active.encounterId || active.id,
           insuranceProvider: "Self-Pay",
@@ -856,9 +994,9 @@ export default function LabBillingQueue({
           status: "Paid",
           items: active.items.map((it, idx) => ({
             id: `ITEM-${it.id || idx}`,
-            description: it.name,
-            category: active.department === "Radiology" ? "Radiology / Imaging" : "Laboratory",
-            cptCode: active.department === "Radiology" ? `RAD-${it.modality || "01"}` : `LAB0${10 + idx}`,
+            description: it.name.replace(/\s*\([^)]*\)$/, ""),
+            category: it.department === "Radiology" ? "Radiology / Imaging" : "Laboratory",
+            cptCode: it.department === "Radiology" ? `RAD-${it.modality || "01"}` : `LAB0${10 + idx}`,
             quantity: 1,
             unitPrice: it.price,
             total: it.price,

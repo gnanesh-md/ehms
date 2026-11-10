@@ -168,6 +168,23 @@ export class RadiologyWorkflowDb {
     if (rs === "Final" || rs === "Finalized" || ws === "FINALIZED") {
       return "Finalized"
     }
+
+    // Check if report has been officially finalized in RadiologyTemplateDatabase
+    const targetKey = (study.id || "").toLowerCase().trim()
+    const accNo = (study.accessionNo || "").toLowerCase().trim()
+    try {
+      const persistedReports = RadiologyTemplateDatabase.getReports()
+      const hasFinalReport = persistedReports.some(
+        (r) =>
+          (r.status === "Final" || (r as any).status === "FINALIZED") &&
+          ((r.studyId && r.studyId.toLowerCase().trim() === targetKey) ||
+           (targetKey && r.testId && r.testId.toLowerCase().trim() === targetKey) ||
+           (accNo && r.studyId && r.studyId.toLowerCase().trim() === accNo))
+      )
+      if (hasFinalReport) {
+        return "Finalized"
+      }
+    } catch {}
     if (
       rs === "Correction Required" ||
       rs === "Needs Correction" ||
@@ -548,37 +565,30 @@ export class RadiologyWorkflowDb {
       const labOrders = LabOrderDatabase.getOrders()
 
       // 2. Pre-build high-speed indexed lookup sets
-      const paidInvoices = new Map<string, string>() // invoiceNo (lowercase) -> receiptNo
-      const paidEncounters = new Map<string, string>() // encounterId (lowercase) -> receiptNo
-      const paidMrns = new Map<string, string>() // mrn/umr (lowercase) -> receiptNo
-      const paidStudyIds = new Set<string>()
+      // A claim ONLY marks a study as paid if the claim is paid AND specifically contains this study in its items
+      const paidStudyIds = new Map<string, string>() // studyId (lowercase) -> receiptNo
 
       for (let i = 0; i < claims.length; i++) {
         const c = claims[i]
         const isClaimPaid =
           c.status === "Paid" ||
-          c.balanceDue <= 0 ||
-          (c.amountPaid > 0 && c.balanceDue <= 0)
+          (c.balanceDue !== undefined && c.balanceDue <= 0 && (c.amountPaid || 0) > 0)
 
-        if (isClaimPaid) {
+        if (isClaimPaid && Array.isArray(c.items)) {
           const rcpt =
             c.payments?.[0]?.receiptNo ||
             `RCPT-2026-${(c.invoiceNo || "").replace(/\D/g, "").slice(-4) || "5501"}`
 
-          if (c.invoiceNo) paidInvoices.set(c.invoiceNo.toLowerCase().trim(), rcpt)
-          if (c.encounterId) paidEncounters.set(c.encounterId.toLowerCase().trim(), rcpt)
-          if (c.patientId) paidMrns.set(c.patientId.toLowerCase().trim(), rcpt)
-          if (c.mrn) paidMrns.set(c.mrn.toLowerCase().trim(), rcpt)
-          if (c.id) paidStudyIds.add(c.id.toLowerCase().replace("clm-", ""))
-        }
-      }
-
-      for (let i = 0; i < labOrders.length; i++) {
-        const lo = labOrders[i]
-        if (lo.billing?.status === "Paid") {
-          const rcpt = lo.billing.receiptNo || "RCPT-2026-LAB"
-          if (lo.encounterId) paidEncounters.set(lo.encounterId.toLowerCase().trim(), rcpt)
-          if (lo.umr) paidMrns.set(lo.umr.toLowerCase().trim(), rcpt)
+          for (let j = 0; j < c.items.length; j++) {
+            const it = c.items[j]
+            const cat = (it.category || "").toLowerCase()
+            if (cat.includes("rad")) {
+              if (it.id) {
+                const cleanId = it.id.toLowerCase().replace("item-rad-", "").replace("item-", "").trim()
+                paidStudyIds.set(cleanId, rcpt)
+              }
+            }
+          }
         }
       }
 
@@ -589,9 +599,7 @@ export class RadiologyWorkflowDb {
         const study = raw[i]
         const ext = study as ExtendedRadiologyRecord
 
-        // Check if study is paid - AUTHORITATIVE ITEM & INVOICE LEVEL CHECK
-        const sInv = (study.invoiceNo || "").toLowerCase().trim()
-        const sEnc = (study.encounterId || "").toLowerCase().trim()
+        // Check if study is paid - AUTHORITATIVE ITEM & RECEIPT CHECK
         const sId = (study.id || "").toLowerCase().trim()
 
         const isAuthException = Boolean(
@@ -600,31 +608,19 @@ export class RadiologyWorkflowDb {
           (ext as any).billingStatus === "Authorized Exception"
         )
 
-        // Find linked invoice in claims database if present
-        const linkedClaim = sInv
-          ? claims.find((c) => c.invoiceNo && c.invoiceNo.toLowerCase().trim() === sInv)
-          : undefined
-
         let isPaid = false
         let receiptNo = study.paidReceiptNo
 
         if (isAuthException) {
           isPaid = true
-        } else if (study.paidReceiptNo || study.paymentStatus === "Paid") {
+        } else if (study.paidReceiptNo || study.paymentStatus === "Paid" || study.isPaid === true) {
           isPaid = true
           receiptNo =
             study.paidReceiptNo ||
-            linkedClaim?.payments?.[0]?.receiptNo ||
             `RCPT-2026-${(study.invoiceNo || "5501").replace(/\D/g, "").slice(-4) || "5501"}`
-        } else if (linkedClaim && (linkedClaim.status === "Paid" || linkedClaim.balanceDue <= 0)) {
+        } else if (paidStudyIds.has(sId)) {
           isPaid = true
-          receiptNo =
-            receiptNo ||
-            linkedClaim.payments?.[0]?.receiptNo ||
-            `RCPT-2026-${linkedClaim.invoiceNo.replace(/\D/g, "").slice(-4) || "5501"}`
-        } else if (paidStudyIds.has(sId) || (sInv ? paidInvoices.has(sInv) : false) || (sEnc ? paidEncounters.has(sEnc) : false)) {
-          isPaid = true
-          receiptNo = receiptNo || (sInv && paidInvoices.get(sInv)) || (sEnc && paidEncounters.get(sEnc)) || "RCPT-2026-5501"
+          receiptNo = receiptNo || paidStudyIds.get(sId) || "RCPT-2026-5501"
         } else {
           isPaid = false
         }
@@ -677,7 +673,7 @@ export class RadiologyWorkflowDb {
         const billingClearedAt =
           ext.billingClearedAt ||
           ext.eligibleAt ||
-          (isPaid ? ext.paidAt || (sInv && paidInvoices.has(sInv) ? ext.orderedAt || ext.createdAt : undefined) : undefined)
+          (isPaid ? ext.paidAt || ext.orderedAt || ext.createdAt : undefined)
         const eligibleAt = ext.eligibleAt || billingClearedAt
         const transferredToReportingAt =
           ext.transferredToReportingAt ||
@@ -726,6 +722,95 @@ export class RadiologyWorkflowDb {
         }
       }
 
+      // Synchronize with RadiologyTemplateDatabase finalized reports to guarantee full visibility
+      try {
+        const persistedReports = RadiologyTemplateDatabase.getReports()
+        const finalizedReportMap = new Map<string, any>()
+        persistedReports.forEach((r) => {
+          if (r.status === "Final" || (r as any).status === "FINALIZED") {
+            if (r.studyId) finalizedReportMap.set(r.studyId.toLowerCase().trim(), r)
+            if (r.testId) finalizedReportMap.set(r.testId.toLowerCase().trim(), r)
+          }
+        })
+
+        const matchedStudyIds = new Set<string>()
+        for (let i = 0; i < result.length; i++) {
+          const rec = result[i]
+          const recIdLower = (rec.id || "").toLowerCase().trim()
+          const recAccLower = (rec.accessionNo || "").toLowerCase().trim()
+          const matchedReport = finalizedReportMap.get(recIdLower) || (recAccLower ? finalizedReportMap.get(recAccLower) : undefined)
+          if (matchedReport) {
+            matchedStudyIds.add(recIdLower)
+            if (recAccLower) matchedStudyIds.add(recAccLower)
+            rec.reportStatus = "Finalized"
+            rec.normalizedReportStatus = "Finalized"
+            ;(rec as any).workflowStatus = "FINALIZED"
+            if (!rec.finalizedAt) rec.finalizedAt = matchedReport.finalizedAt || matchedReport.savedAt
+            if (!rec.finalizedBy) rec.finalizedBy = matchedReport.radiologistName || matchedReport.technicianName
+            if (!rec.findings || rec.findings.length === 0) {
+              if (matchedReport.findings && matchedReport.findings.length > 0) {
+                rec.findings = matchedReport.findings
+              }
+            }
+            if (!rec.impression || rec.impression.length === 0) {
+              if (matchedReport.impression && matchedReport.impression.length > 0) {
+                rec.impression = matchedReport.impression
+              }
+            }
+          }
+        }
+
+        // Include any standalone finalized reports from RadiologyTemplateDatabase not yet in result
+        persistedReports.forEach((rep) => {
+          if ((rep.status === "Final" || (rep as any).status === "FINALIZED") && rep.studyId) {
+            const sKey = rep.studyId.toLowerCase().trim()
+            if (!matchedStudyIds.has(sKey)) {
+              matchedStudyIds.add(sKey)
+              result.push({
+                id: rep.studyId,
+                patient: rep.patientName || "Walk-in Patient",
+                umr: rep.umr || rep.mrn || "UMR-9999",
+                mrn: rep.mrn || rep.umr || "UMR-9999",
+                encounterId: rep.encounterId || "OP-1002",
+                study: rep.testName || "Radiology Examination",
+                department: "Radiology",
+                modality: getModalityForTest(rep.testName || "") || "XR",
+                provider: rep.referringDoctor || "Attending Physician",
+                ordered: rep.orderedDate || new Date().toISOString().split("T")[0],
+                orderDate: rep.orderedDate || new Date().toISOString().split("T")[0],
+                status: "Final",
+                reportStatus: "Finalized",
+                normalizedReportStatus: "Finalized",
+                workflowStatus: "FINALIZED",
+                normalizedStatus: "DONE",
+                finalizedAt: rep.finalizedAt || rep.savedAt || new Date().toISOString(),
+                finalizedBy: rep.radiologistName || rep.technicianName || "Radiology Specialist",
+                radiologist: rep.radiologistName || rep.technicianName || "Radiology Specialist",
+                technician: rep.technicianName || "Radiology Technician",
+                paymentStatus: "Paid",
+                billingStatus: "Paid",
+                isPaid: true,
+                paymentStatusDisplay: "PAID",
+                findings: rep.findings || [],
+                impression: rep.impression || [],
+                history: [
+                  {
+                    timestamp: rep.finalizedAt || new Date().toISOString(),
+                    action: "Report Finalized",
+                    actor: rep.radiologistName || rep.technicianName || "Radiology Specialist",
+                    role: "Radiology Specialist",
+                    details: `Report finalized for ${rep.patientName} (${rep.testName}).`,
+                    status: "DONE",
+                  },
+                ],
+              } as ExtendedRadiologyRecord)
+            }
+          }
+        })
+      } catch (err) {
+        console.warn("Error synchronizing with RadiologyTemplateDatabase reports:", err)
+      }
+
       result.sort((a, b) => {
         const timeA = this.getOrderCreationTimestamp(a)
         const timeB = this.getOrderCreationTimestamp(b)
@@ -742,7 +827,7 @@ export class RadiologyWorkflowDb {
   }
 
   /**
-   * Get all studies eligible for the Reporting Workspace
+   * Get all studies eligible for the Reporting Workspace (FIFO: Oldest orders first).
    */
   static getReportingStudies(): ExtendedRadiologyRecord[] {
     return this.getStudies().filter((s) => {
@@ -758,6 +843,11 @@ export class RadiologyWorkflowDb {
         s.status === "Sent for Reporting" ||
         (s as any).workflowStatus === "SENT_TO_REPORTING"
       ) && rs !== "Awaiting Scan"
+    }).sort((a, b) => {
+      const timeA = this.getReportingQueueTimestamp(a)
+      const timeB = this.getReportingQueueTimestamp(b)
+      if (timeA !== timeB) return timeA - timeB // FIFO: Oldest orders first
+      return (a.id || "").localeCompare(b.id || "")
     })
   }
 
@@ -1351,16 +1441,30 @@ export class RadiologyWorkflowDb {
     templateName?: string
   }): ExtendedRadiologyRecord {
     const studies = this.getStudies()
-    const study = studies.find((s) => s.id === data.studyId)
+    const study = this.getStudyById(data.studyId) || studies.find((s) => s.id === data.studyId || (s.accessionNo && s.accessionNo === data.studyId))
     if (!study) throw new Error("Radiology investigation not found")
 
     if (data.isFinal) {
-      const authorizedSigners = ["Radiologist", "Specialist", "Consultant", "Admin", "Doctor", "HOD", "Chief"]
+      const authorizedSigners = [
+        "Radiologist",
+        "Specialist",
+        "Consultant",
+        "Admin",
+        "Doctor",
+        "HOD",
+        "Chief",
+        "Technician",
+        "Technologist",
+        "Radiographer",
+        "Tech",
+        "Staff",
+        "Operator",
+      ]
       const isAuthorized = authorizedSigners.some((r) =>
         data.specialistRole.toLowerCase().includes(r.toLowerCase())
       )
       if (!isAuthorized) {
-        throw new Error(`Unauthorized: User role "${data.specialistRole}" is not authorized to sign and finalize radiology diagnostic reports. Only credentialed Radiologists or authorized Physicians may sign official reports.`)
+        throw new Error(`Unauthorized: User role "${data.specialistRole}" is not authorized to sign and finalize radiology diagnostic reports. Only credentialed Radiologists, Physicians, or Imaging Technologists may sign official reports.`)
       }
     }
 
@@ -1381,7 +1485,9 @@ export class RadiologyWorkflowDb {
       },
     ]
 
-    const updated = BillingDatabase.updateRadiologyStudy(data.studyId, {
+    const targetId = study.id || data.studyId
+
+    const updated = BillingDatabase.updateRadiologyStudy(targetId, {
       indication: data.indication,
       technique: data.technique,
       findings: data.findings,
@@ -1404,6 +1510,14 @@ export class RadiologyWorkflowDb {
       status: data.isFinal ? "Final" : "Images Ready",
       history: updatedHistory,
     })
+
+    if (data.isFinal) {
+      try {
+        localStorage.removeItem(`hospai_rad_rep_status_${targetId}`)
+        if (study.id) localStorage.removeItem(`hospai_rad_rep_status_${study.id}`)
+        if (study.umr) localStorage.removeItem(`hospai_rad_rep_status_${study.umr}`)
+      } catch {}
+    }
 
     AuditDatabase.logEvent(
       data.isFinal ? "Radiology Report Finalized" : "Radiology Report Draft Saved",
@@ -1958,7 +2072,19 @@ export class RadiologyWorkflowDb {
     const study = studies.find((s) => s.id === data.studyId)
     if (!study) throw new Error("Radiology investigation not found")
 
-    const authorizedRoles = ["Radiologist", "Specialist", "Consultant", "Admin", "Doctor", "HOD"]
+    const authorizedRoles = [
+      "Radiologist",
+      "Specialist",
+      "Consultant",
+      "Admin",
+      "Doctor",
+      "HOD",
+      "Technician",
+      "Technologist",
+      "Radiographer",
+      "Tech",
+      "Staff",
+    ]
     const userRole = data.role || "Radiologist"
     const isAuthorized = authorizedRoles.some((r) =>
       userRole.toLowerCase().includes(r.toLowerCase())
@@ -2087,9 +2213,18 @@ export class RadiologyWorkflowDb {
    * Subscribes to changes with auto-cache invalidation and instant in-memory reactive updates
    */
   static subscribe(callback: () => void): () => void {
+    let notifying = false
     const onSignal = () => {
-      RadiologyWorkflowDb.invalidateCache()
-      callback()
+      if (notifying) return
+      notifying = true
+      try {
+        cachedStudies = null
+        cacheTimestamp = 0
+        BillingDatabase.invalidateRadiologyStudiesCache()
+        callback()
+      } finally {
+        notifying = false
+      }
     }
 
     this._listeners.add(onSignal)

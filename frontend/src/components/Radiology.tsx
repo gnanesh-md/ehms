@@ -2534,6 +2534,7 @@ export function printRadiologyDocument(study: RadiologyStudyRecord, defaultCatal
 
 export default function Radiology({
   technician = "Dr. Rajesh Sharma, MD",
+  role = "Senior Radiologist & HOD",
   initialTab = "overview",
   departmentScope = "all",
   initialStudyId = null,
@@ -2541,6 +2542,7 @@ export default function Radiology({
   onNavigateTab,
 }: {
   technician?: string
+  role?: string
   initialTab?: string
   departmentScope?: RadiologyDepartmentScope
   initialStudyId?: string | null
@@ -2588,6 +2590,7 @@ export default function Radiology({
       hideSidebar={true}
       initialScope={mappedScope}
       technician={technician}
+      role={role}
     />
   )
 }

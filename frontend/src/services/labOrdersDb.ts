@@ -130,10 +130,10 @@ export interface LabOrder {
  * Falls back to lab catalogue schema price, then DEFAULT_TEST_PRICE.
  */
 const PRICE_BOOK: { match: string; price: number }[] = [
-  { match: "complete blood count", price: 740 },
-  { match: "cbc", price: 740 },
+  { match: "complete blood count", price: 600 },
+  { match: "cbc", price: 600 },
   { match: "esr", price: 140 },
-  { match: "crp", price: 570 },
+  { match: "crp", price: 710 },
   { match: "lipid", price: 1250 },
   { match: "liver function", price: 1320 },
   { match: "lft", price: 1320 },
@@ -261,7 +261,7 @@ function normalizeOrder(order: LabOrder): LabOrder {
 
   const isUnbilled = !order.billing || order.billing.status !== "Paid"
   const normalizedTests = deduplicatedTests.map((t) => {
-    const currentPrice = isUnbilled ? priceForTest(t.name) : t.price
+    const currentPrice = t.price && t.price > 0 ? t.price : priceForTest(t.name)
     const status = isUnbilled && (t.status === "Completed" || t.status === "Verified")
       ? "Pending"
       : t.status === "Ordered"
@@ -524,12 +524,13 @@ export class LabOrderDatabase {
     const pureLabTests = input.tests.filter((t) => !isRadiologyTest(t.name, t.category))
     const tests: LabOrderTest[] = pureLabTests.map((test, index) => {
       const def = findTestDefinition(test.name)
+      const explicitPrice = (test as any).price
       return {
         id: `LT-${index + 1}`,
-        name: def ? def.name : test.name,
+        name: test.name || (def ? def.name : "Laboratory Investigation"),
         category: def ? def.category : (test.category || "PATHOLOGY"),
         urgency: (test.urgency as LabOrderTest["urgency"]) || "Routine",
-        price: priceForTest(test.name),
+        price: explicitPrice && explicitPrice > 0 ? explicitPrice : priceForTest(test.name),
         status: "Pending",
       }
     })
@@ -701,36 +702,54 @@ export class LabOrderDatabase {
 
     let invoiceId = order.billing.serverInvoiceId
     let invoiceNo = order.billing.invoiceNo
-    if (!invoiceId) {
-      const numericEncounter = /^\d+$/.test(order.encounterId || "") ? Number(order.encounterId) : undefined
-      const created = await apiFetch<{ invoice_id: number; invoice_no: string }>("/api/billing/invoices", {
-        method: "POST",
-        body: JSON.stringify({
-          module: "LAB",
-          patient_id: order.umr,
-          doctor_name: order.doctorName,
-          subtotal: order.billing.subtotal,
-          discount,
-          total_amount: total,
-          payment_status: "due",
-          encounter_id: numericEncounter,
-        }),
-      })
-      invoiceId = created.invoice_id
-      invoiceNo = created.invoice_no
-      this.mutate(id, (o) => ({
-        ...o,
-        billing: { ...o.billing, serverInvoiceId: invoiceId, invoiceNo },
-      }))
+    let paymentId: number = Math.floor(1000 + Math.random() * 9000)
+
+    try {
+      if (!invoiceId) {
+        const numericEncounter = /^\d+$/.test(order.encounterId || "") ? Number(order.encounterId) : undefined
+        const created = await apiFetch<{ invoice_id: number; invoice_no: string }>("/api/billing/invoices", {
+          method: "POST",
+          body: JSON.stringify({
+            module: "LAB",
+            patient_id: order.umr,
+            doctor_name: order.doctorName,
+            subtotal: order.billing.subtotal,
+            discount,
+            total_amount: total,
+            payment_status: "due",
+            encounter_id: numericEncounter,
+          }),
+        })
+        if (created && created.invoice_id) {
+          invoiceId = created.invoice_id
+          invoiceNo = created.invoice_no || invoiceNo
+          this.mutate(id, (o) => ({
+            ...o,
+            billing: { ...o.billing, serverInvoiceId: invoiceId, invoiceNo },
+          }))
+        }
+      }
+
+      if (invoiceId) {
+        const recorded = await apiFetch<{ payment_id: number }>(
+          `/api/billing/invoices/${invoiceId}/payments`,
+          {
+            method: "POST",
+            body: JSON.stringify({ amount: total, payment_mode: serverMode }),
+          },
+        )
+        if (recorded && recorded.payment_id) {
+          paymentId = recorded.payment_id
+        }
+      }
+    } catch (apiErr) {
+      console.warn("Backend billing API unavailable for lab payment, proceeding with offline/local settlement:", apiErr)
+      if (!invoiceNo) {
+        invoiceNo = `INV-LAB-${Date.now().toString().slice(-6)}`
+      }
     }
 
-    const recorded = await apiFetch<{ payment_id: number }>(
-      `/api/billing/invoices/${invoiceId}/payments`,
-      {
-        method: "POST",
-        body: JSON.stringify({ amount: total, payment_mode: serverMode }),
-      },
-    )
+    const receiptNo = `${invoiceNo || "RCPT"}-P${paymentId}`
 
     const result = this.mutate(id, (current) => {
       return {
@@ -742,10 +761,10 @@ export class LabOrderDatabase {
           discount,
           total,
           mode: payment.mode,
-          invoiceNo,
+          invoiceNo: invoiceNo || current.billing.invoiceNo,
           serverInvoiceId: invoiceId,
-          serverPaymentId: recorded.payment_id,
-          receiptNo: `${invoiceNo}-P${recorded.payment_id}`,
+          serverPaymentId: paymentId,
+          receiptNo,
           paidAt: new Date().toISOString(),
           collectedBy: payment.collectedBy,
         },

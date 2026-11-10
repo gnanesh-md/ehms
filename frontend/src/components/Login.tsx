@@ -87,22 +87,47 @@ const ROLES_LIST: LoginRoleOption[] = [
 // authorized by the server-side permission attached to the session.
 const NAVIGATION_MODULE_ALIASES: Record<string, string[]> = {
   patients: ["patients", "register", "appointments", "patient_messages", "clinical", "chart", "doctor_portal"],
-  clinical: ["clinical", "doctor_portal", "patients", "appointments"],
-  doctor_portal: ["doctor_portal", "clinical", "patients", "appointments"],
-  op: ["outpatient", "op_management", "queue", "op_nurse", "opd_procedures"],
-  er: ["emergency", "triage"],
+  clinical: ["clinical", "chart", "doctor_portal", "doctor_workflow", "patients", "appointments"],
+  op: ["outpatient", "op_management", "queue", "op_nurse", "opd_procedures", "op_workflow"],
+  outpatient: ["outpatient", "op_management", "queue", "op_nurse", "opd_procedures", "op_workflow"],
+  doctor: ["doctor_portal", "doctor_workflow", "clinical", "chart", "op_management", "queue", "patients"],
+  doctor_portal: ["doctor_portal", "doctor_workflow", "clinical", "patients", "appointments", "chart"],
+  nursing: ["nursing", "op_nurse", "inpatient", "beds", "triage", "chart"],
+  nurse: ["nursing", "op_nurse", "inpatient", "beds", "triage", "chart"],
+  er: ["emergency", "emergency_ui", "triage"],
+  emergency: ["emergency", "emergency_ui", "triage"],
   beds: ["inpatient", "beds", "admissions", "readmission", "discharge"],
+  inpatient: ["inpatient", "beds", "admissions", "readmission", "discharge"],
+  icu: ["icu", "icu_micu", "icu_sicu", "icu_ccu", "icu_nicu", "icu_picu", "icu_ward"],
+  laboratory: ["laboratory", "lab_dashboard", "lab_orders_collection", "lab_workbench", "lab_reports", "lab_inventory", "lab_quality_analytics", "lab_admin_config"],
+  lab: ["laboratory", "lab_dashboard", "lab_orders_collection", "lab_workbench", "lab_reports", "lab_inventory", "lab_quality_analytics", "lab_admin_config"],
+  radiology: ["radiology", "radiology_worklist", "radiology_operations", "radiology_reporting", "radiology_reports", "radiology_template_upload", "radiology_analytics"],
+  pharmacy: [
+    "pharmacy", "pharmacy_dispensing", "pharmacy_rx", "pharmacy_returns",
+    "pharmacy_medicine", "pharmacy_suppliers", "pharmacy_ocr",
+    "pharmacy_supplier_returns", "pharmacy_ledger", "pharmacy_expiry",
+    "pharmacy_write_off", "pharmacy_analytics", "pharmacy_notifications", "pharmacy_audit"
+  ],
+  surgery: ["surgery"],
   symptom_ai: ["intelligence", "symptom_ai", "clinical_rag", "clinical_summaries", "bulk_ai", "nl_filtering"],
+  intelligence: ["intelligence", "dpi_ocr", "symptom_ai", "clinical_rag", "clinical_summaries", "bulk_ai", "nl_filtering"],
   billing: ["billing", "billing_op", "billing_ip", "billing_er", "lab_billing", "billing_unified", "payments", "billing_revenue"],
+  insurance: ["insurance", "insurance_overview", "insurance_patient_policies", "insurance_eligibility", "insurance_preauth", "insurance_claims", "insurance_emails", "insurance_settlement", "insurance_masters", "insurance_docrules"],
   accounts: ["accounts", "accounts_dashboard", "accounts_coa", "accounts_gl", "accounts_receipts", "accounts_payments", "accounts_ar", "accounts_ap", "accounts_cash_bank", "accounts_pharmacy", "accounts_insurance", "accounts_tax", "accounts_budget", "accounts_assets", "accounts_reports", "accounts_period_close", "accounts_audit", "accounts_manager"],
+  hrms: ["hrms", "employees", "hr_attendance", "scheduling", "hr_staffing", "hr_leave", "hr_approvals", "hr_payroll", "hr_recruitment", "hr_organization", "hr_training", "hr_performance", "hr_compliance", "hr_grievances", "hr_reports", "hr_announcements", "my_hr"],
   patient_experience: ["patient_exp", "patient_messages"],
+  reports: [
+    "reports", "reports_overview", "reports_patients", "reports_op", "reports_er",
+    "reports_inpatient", "reports_appointments", "reports_doctors", "reports_pharmacy",
+    "reports_laboratory", "reports_radiology", "reports_beds", "reports_admissions",
+    "reports_discharges", "reports_staff", "revenue_reports", "reports_pharmacy_damaged", "reports_supplier_returns"
+  ],
 }
 
 function navigationModules(moduleAccess: string[]): string[] {
   const modules = new Set<string>()
   for (const module of moduleAccess) {
     if (!module) continue
-    modules.add(module)
     // Extract base module name from granular permissions like "pharmacy:view" or "pharmacy.rx"
     const base = module.split(/[:.]/)[0]
     if (base) {
@@ -116,6 +141,7 @@ function navigationModules(moduleAccess: string[]): string[] {
         modules.add(alias)
       }
     }
+    modules.add(module)
   }
   return [...modules]
 }

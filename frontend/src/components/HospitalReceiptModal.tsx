@@ -1,6 +1,8 @@
 import React, { useMemo } from "react"
 
-import { ClaimRecord, PaymentRecord } from "../services/billingDb"
+import { ClaimRecord, PaymentRecord, InvoiceItem, normalizeUmr, cleanEnc } from "../services/billingDb"
+import { LabOrderDatabase } from "../services/labOrdersDb"
+import { RadiologyWorkflowDb } from "../services/radiologyWorkflowDb"
 
 import {
   formatReceiptDateTime,
@@ -12,6 +14,116 @@ import {
 import { RECEIPT_LOGO_BASE64 } from "../assets/receiptLogoBase64"
 import { SendToPatientButton } from "./messaging/SendToPatientDialog"
 import { billMessageVars, buildBillDocument } from "../lib/patientDocuments"
+
+/**
+ * Resolves actual investigation names and charges from linked department orders,
+ * preventing any generic placeholders like "LABORATORY CHARGES" or "RADIOLOGY CHARGES".
+ */
+function resolveInvestigationItems(claim: ClaimRecord): InvoiceItem[] {
+  const originalItems = claim.items || []
+  const isGeneric = (desc?: string) => {
+    if (!desc) return false
+    const d = desc.trim().toUpperCase()
+    return (
+      d === "LABORATORY CHARGES" ||
+      d === "RADIOLOGY CHARGES" ||
+      d === "DIAGNOSTIC INVESTIGATIONS & SERVICES" ||
+      d === "DIAGNOSTIC INVESTIGATIONS" ||
+      d === "LABORATORY SERVICES" ||
+      d === "RADIOLOGY SERVICES" ||
+      d === "LAB CHARGES" ||
+      d === "RAD CHARGES" ||
+      d === "LABORATORY" ||
+      d === "RADIOLOGY" ||
+      d === "INVESTIGATIONS" ||
+      d === "INVESTIGATION CHARGES"
+    )
+  }
+
+  const hasGenericItem = originalItems.some((it) => isGeneric(it.description))
+  const hasNoItems = originalItems.length === 0
+
+  if (!hasGenericItem && !hasNoItems) {
+    return originalItems
+  }
+
+  const umr = normalizeUmr(claim.patientId || claim.mrn)
+  const enc = cleanEnc(claim.encounterId || claim.invoiceNo)
+
+  const labOrders = LabOrderDatabase.getOrders().filter((o) => {
+    const oUmr = normalizeUmr(o.umr)
+    const oEnc = cleanEnc(o.opNumber || o.encounterId)
+    return (
+      (oUmr && umr && oUmr === umr) ||
+      (oEnc && enc && oEnc === enc) ||
+      (o.patientName && claim.patientName && o.patientName.toLowerCase() === claim.patientName.toLowerCase())
+    )
+  })
+
+  const radStudies = RadiologyWorkflowDb.getStudies().filter((s) => {
+    const sUmr = normalizeUmr(s.umr || (s as any).mrn)
+    const sEnc = cleanEnc((s as any).opNumber || s.encounterId)
+    return (
+      (sUmr && umr && sUmr === umr) ||
+      (sEnc && enc && sEnc === enc) ||
+      (s.patient && claim.patientName && s.patient.toLowerCase() === claim.patientName.toLowerCase())
+    )
+  })
+
+  const nonGenericItems = originalItems.filter((it) => !isGeneric(it.description))
+  const resolvedItems: InvoiceItem[] = [...nonGenericItems]
+
+  let labIdx = 10
+  labOrders.forEach((o) => {
+    (o.tests || []).forEach((t) => {
+      const exists = resolvedItems.some(
+        (it) => it.description.toLowerCase().trim() === t.name.toLowerCase().trim()
+      )
+      if (!exists) {
+        resolvedItems.push({
+          id: `ITEM-LAB-${o.id}-${labIdx}`,
+          description: t.name,
+          category: "Laboratory",
+          cptCode: t.code || `LAB0${labIdx}`,
+          quantity: 1,
+          unitPrice: t.price || 0,
+          total: t.price || 0,
+          insuranceCovered: 0,
+          patientPayable: t.price || 0,
+          orderedBy: o.doctorName || claim.attendingDoctor || "Attending Doctor",
+          orderedAt: o.createdAt,
+        })
+        labIdx++
+      }
+    })
+  })
+
+  let radIdx = 20
+  radStudies.forEach((s) => {
+    const cleanStudy = (s.study || "Radiology Scan").replace(/\s*\([^)]*\)$/, "")
+    const exists = resolvedItems.some(
+      (it) => it.description.toLowerCase().trim() === cleanStudy.toLowerCase().trim()
+    )
+    if (!exists) {
+      resolvedItems.push({
+        id: `ITEM-RAD-${s.id}`,
+        description: cleanStudy,
+        category: "Radiology / Imaging",
+        cptCode: `RAD0${radIdx}`,
+        quantity: 1,
+        unitPrice: s.price || 0,
+        total: s.price || 0,
+        insuranceCovered: 0,
+        patientPayable: s.price || 0,
+        orderedBy: s.provider || claim.attendingDoctor || "Attending Doctor",
+        orderedAt: s.ordered || (s as any).createdAt,
+      })
+      radIdx++
+    }
+  })
+
+  return resolvedItems.length > 0 ? resolvedItems : originalItems
+}
 
 interface HospitalReceiptModalProps {
   claim: ClaimRecord
@@ -146,12 +258,33 @@ export default function HospitalReceiptModal({
           ? "EMERGENCY TRIAGE BED-02"
           : "OP CONSULTATION SUITE #102"
 
-  // Itemized Groups
+  // Itemized Groups & Resolved Investigations
+  const effectiveItems = useMemo(
+    () => resolveInvestigationItems(claim),
+    [claim],
+  )
 
   const groupedSections = useMemo(
-    () => groupReceiptItems(claim.items || []),
-    [claim.items],
+    () => groupReceiptItems(effectiveItems),
+    [effectiveItems],
   )
+
+  const labSubtotal = useMemo(() => {
+    return effectiveItems
+      .filter((it) => it.category === "Laboratory" || (it.category as any) === "Lab")
+      .reduce((sum, it) => sum + (it.total || (it.unitPrice || 0) * (it.quantity || 1)), 0)
+  }, [effectiveItems])
+
+  const radSubtotal = useMemo(() => {
+    return effectiveItems
+      .filter(
+        (it) =>
+          it.category === "Radiology" ||
+          it.category === "Radiology / Imaging" ||
+          (it.category as any) === "Imaging",
+      )
+      .reduce((sum, it) => sum + (it.total || (it.unitPrice || 0) * (it.quantity || 1)), 0)
+  }, [effectiveItems])
 
   // Payment Rows (Receipt / Payment Details Table)
   const isInsuranceClaim =
@@ -211,7 +344,10 @@ export default function HospitalReceiptModal({
     0,
   )
 
-  const grossAmount = claim.totalAmount || totalReceiptAmount
+  const discountAmount = claim.discount || 0
+  const calculatedItemsTotal = effectiveItems.reduce((s, i) => s + (i.total || (i.unitPrice || 0) * (i.quantity || 1)), 0)
+  const grossAmount = claim.subtotal || (calculatedItemsTotal > 0 ? calculatedItemsTotal : (claim.totalAmount || totalReceiptAmount))
+  const amountPaid = claim.amountPaid != null && claim.amountPaid > 0 ? claim.amountPaid : totalReceiptAmount
 
   const totalReceivedWords =
     totalReceiptAmount === 0 && isInsuranceClaim
@@ -641,27 +777,29 @@ export default function HospitalReceiptModal({
                             </td>
                           </tr>
 
-                          <tr className="font-bold text-slate-800">
-                            <td
-                              colSpan={5}
-                              className="pt-0.5 pl-6 px-2 text-[11px]"
-                            >
-                              {section.subCategory}
-                            </td>
-                            <td className="pt-0.5 px-2 text-right font-mono font-bold text-[11px]">
-                              {section.subTotal.toLocaleString("en-IN", {
-                                minimumFractionDigits: 2,
-                                maximumFractionDigits: 2,
-                              })}
-                            </td>
-                          </tr>
+                          {section.subCategory ? (
+                            <tr className="font-bold text-slate-800">
+                              <td
+                                colSpan={5}
+                                className="pt-0.5 pl-6 px-2 text-[11px]"
+                              >
+                                {section.subCategory}
+                              </td>
+                              <td className="pt-0.5 px-2 text-right font-mono font-bold text-[11px]">
+                                {section.subTotal.toLocaleString("en-IN", {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </td>
+                            </tr>
+                          ) : null}
 
                           {section.items.map((item, iIdx) => (
                             <tr key={iIdx} className="text-slate-800 text-[11px]">
                               <td className="py-0.5 px-2 text-center font-mono font-medium">
                                 {item.serviceCode}
                               </td>
-                              <td className="py-0.5 pl-10 px-2 font-medium">
+                              <td className={`py-0.5 ${section.subCategory ? "pl-10" : "pl-6"} px-2 font-medium`}>
                                 {item.description}
                               </td>
                               <td className="py-0.5 px-2 text-center font-mono text-slate-500">
@@ -688,7 +826,42 @@ export default function HospitalReceiptModal({
                         </React.Fragment>
                       ))}
 
-                      <tr className="border-t border-slate-300">
+                      {/* Payment Summary breakdown */}
+                      {labSubtotal > 0 && (
+                        <tr className="border-t border-slate-300">
+                          <td
+                            colSpan={5}
+                            className="pt-2 text-right font-semibold text-slate-700 pr-4"
+                          >
+                            Laboratory Subtotal
+                          </td>
+                          <td className="pt-2 text-right font-mono font-semibold text-slate-800 px-2">
+                            {labSubtotal.toLocaleString("en-IN", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}
+                          </td>
+                        </tr>
+                      )}
+
+                      {radSubtotal > 0 && (
+                        <tr className={labSubtotal === 0 ? "border-t border-slate-300" : ""}>
+                          <td
+                            colSpan={5}
+                            className="pt-1 text-right font-semibold text-slate-700 pr-4"
+                          >
+                            Radiology Subtotal
+                          </td>
+                          <td className="pt-1 text-right font-mono font-semibold text-slate-800 px-2">
+                            {radSubtotal.toLocaleString("en-IN", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}
+                          </td>
+                        </tr>
+                      )}
+
+                      <tr className={labSubtotal === 0 && radSubtotal === 0 ? "border-t border-slate-300" : ""}>
                         <td
                           colSpan={5}
                           className="pt-2 text-right font-bold text-slate-800 pr-4"
@@ -702,14 +875,47 @@ export default function HospitalReceiptModal({
                           })}
                         </td>
                       </tr>
+
+                      {(discountAmount > 0 || (labSubtotal > 0 && radSubtotal > 0)) && (
+                        <tr>
+                          <td
+                            colSpan={5}
+                            className="pt-1 text-right font-semibold text-slate-700 pr-4"
+                          >
+                            Discount
+                          </td>
+                          <td className="pt-1 text-right font-mono font-semibold text-slate-800 px-2">
+                            {discountAmount.toLocaleString("en-IN", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}
+                          </td>
+                        </tr>
+                      )}
+
                       <tr>
                         <td
                           colSpan={5}
-                          className="pb-1 text-right font-bold text-slate-800 pr-4"
+                          className="pt-1 text-right font-semibold text-slate-700 pr-4"
                         >
-                          Total Receipt
+                          Amount Paid
                         </td>
-                        <td className="pb-1 text-right font-mono font-bold text-slate-900 px-2">
+                        <td className="pt-1 text-right font-mono font-semibold text-slate-800 px-2">
+                          {amountPaid.toLocaleString("en-IN", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}
+                        </td>
+                      </tr>
+
+                      <tr className="border-t border-slate-400">
+                        <td
+                          colSpan={5}
+                          className="pb-1 pt-1.5 text-right font-bold text-slate-900 pr-4 text-[12px]"
+                        >
+                          Total Receipt Amount
+                        </td>
+                        <td className="pb-1 pt-1.5 text-right font-mono font-bold text-slate-900 px-2 text-[12px]">
                           {totalReceiptAmount.toLocaleString("en-IN", {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2,
