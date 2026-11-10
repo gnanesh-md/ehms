@@ -133,6 +133,7 @@ import PatientMessages from "./components/messaging/PatientMessages"
 
 import HrWorkspace, { type HrSection } from "./components/hr/HrWorkspace"
 import OnDutyStrip from "./components/hr/OnDutyStrip"
+import { hr } from "./services/hr/client"
 import { HrmsDatabase } from "./services/hrmsDb"
 import HRMS from "./components/HRMS"
 import ApplyLeaveModal from "./components/hrms/ApplyLeaveModal"
@@ -693,12 +694,50 @@ function moduleTrail(module: string): string[] {
   return [module]
 }
 
+class NotificationErrorBoundary extends React.Component<
+  { children: React.ReactNode; onClose?: () => void },
+  { hasError: boolean }
+> {
+  state = { hasError: false }
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error("NotificationPanel error caught:", error, info)
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <>
+          <div className="fixed inset-0 z-40" onClick={this.props.onClose} aria-hidden="true" />
+          <div className="fixed left-2 right-2 top-12 sm:absolute sm:left-auto sm:right-0 sm:top-full mt-1 sm:w-80 bg-white border border-slate-200 rounded shadow-xl z-50 p-4 text-center">
+            <div className="text-slate-800 font-semibold text-xs mb-1">Notifications</div>
+            <div className="text-slate-500 text-[11px] mb-3">No active notifications available right now.</div>
+            <button
+              onClick={() => {
+                this.setState({ hasError: false })
+                this.props.onClose?.()
+              }}
+              className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded transition-colors"
+            >
+              Close
+            </button>
+          </div>
+        </>
+      )
+    }
+    return this.props.children
+  }
+}
+
 function NotificationPanel({
   onClose,
   onNavigate,
+  onUnreadChange,
 }: {
   onClose: () => void
   onNavigate: (module: string, sub?: string) => void
+  onUnreadChange?: (count: number) => void
 }) {
   const [readState, setReadState] = useState<Record<string, boolean>>(() => {
     try {
@@ -712,10 +751,17 @@ function NotificationPanel({
   const [hrNotes, setHrNotes] = useState<{ id: string; severity: string; title: string; body: string | null; at: string | null; target: string }[]>([])
   useEffect(() => {
     let alive = true
-    const load = () =>
-      hr.get<typeof hrNotes>("/api/v1/me/notifications")
-        .then((rows) => alive && setHrNotes(Array.isArray(rows) ? rows.slice(0, 8) : []))
-        .catch(() => alive && setHrNotes([])) // HR service down: the bell just shows the rest
+    const load = () => {
+      try {
+        if (hr && typeof hr.get === "function") {
+          hr.get<typeof hrNotes>("/api/v1/me/notifications")
+            .then((rows) => alive && setHrNotes(Array.isArray(rows) ? rows.slice(0, 8) : []))
+            .catch(() => alive && setHrNotes([]))
+        }
+      } catch {
+        if (alive) setHrNotes([])
+      }
+    }
     load()
     const t = setInterval(load, 60_000)
     return () => {
@@ -737,97 +783,150 @@ function NotificationPanel({
     }[] = []
 
     // 1. Bed Transfer notifications
-    const transfers = BedDatabase.getTransferNotifications()
-    transfers.slice(0, 3).forEach((tr) => {
-      list.push({
-        id: `tr-${tr.id}`,
-        type: tr.priority.includes("Stat") ? "critical" : "warning",
-        icon: "🛏️",
-        title: `Bed Transfer: ${tr.patient_name}`,
-        body: `${tr.source_department} → ${tr.target_destination}`,
-        time: "Just now",
-        target: "inpatient",
-        sub: tr.target_ward,
-      })
-    })
+    try {
+      const transfers = BedDatabase.getTransferNotifications()
+      if (Array.isArray(transfers)) {
+        transfers.slice(0, 3).forEach((tr) => {
+          if (!tr) return
+          const isStat = Boolean(tr.priority && String(tr.priority).includes("Stat"))
+          list.push({
+            id: `tr-${tr.id || Math.random()}`,
+            type: isStat ? "critical" : "warning",
+            icon: "🛏️",
+            title: `Bed Transfer: ${tr.patient_name || "Patient"}`,
+            body: `${tr.source_department || "Ward"} → ${tr.target_destination || "Destination"}`,
+            time: "Just now",
+            target: "inpatient",
+            sub: tr.target_ward,
+          })
+        })
+      }
+    } catch (e) {
+      console.warn("Transfer notifs error", e)
+    }
 
     // 2. Critical & Pending Labs
-    const labs = LabOrderDatabase.getOrders()
-    labs
-      .filter((l) => l.status === "Awaiting Billing" || l.status === "Sample Collected" || l.status === "In Progress" || l.tests?.some(t => t.flag === "Critical"))
-      .slice(0, 3)
-      .forEach((l) => {
-        const isCrit = l.tests?.some((t) => t.flag === "Critical" || t.urgency === "STAT")
-        const testName = l.tests && l.tests[0] ? l.tests[0].name : "Diagnostic Order"
-        list.push({
-          id: `lab-${l.id}`,
-          type: isCrit ? "critical" : "info",
-          icon: "🧪",
-          title: isCrit ? `Critical Lab: ${l.patientName}` : `Pending Lab: ${testName}`,
-          body: `${testName} (${l.umr}) · Status: ${l.status}`,
-          time: "10m ago",
-          target: "laboratory",
-        })
-      })
+    try {
+      const labs = LabOrderDatabase.getOrders()
+      if (Array.isArray(labs)) {
+        labs
+          .filter((l) => l && (l.status === "Awaiting Billing" || l.status === "Sample Collected" || l.status === "In Progress" || (Array.isArray(l.tests) && l.tests.some(t => t?.flag === "Critical"))))
+          .slice(0, 3)
+          .forEach((l) => {
+            const isCrit = Array.isArray(l.tests) && l.tests.some((t) => t?.flag === "Critical" || t?.urgency === "STAT")
+            const testName = (Array.isArray(l.tests) && l.tests[0]?.name) ? l.tests[0].name : "Diagnostic Order"
+            list.push({
+              id: `lab-${l.id || Math.random()}`,
+              type: isCrit ? "critical" : "info",
+              icon: "🧪",
+              title: isCrit ? `Critical Lab: ${l.patientName || "Patient"}` : `Pending Lab: ${testName}`,
+              body: `${testName} (${l.umr || "UMR"}) · Status: ${l.status || "Pending"}`,
+              time: "10m ago",
+              target: "laboratory",
+            })
+          })
+      }
+    } catch (e) {
+      console.warn("Lab notifs error", e)
+    }
 
     // 3. ER Active Visits / Census
-    const erVisits = ErDatabase.getVisits("active")
-    const criticalEr = erVisits.filter(
-      (v) => v.triage_category === "B1" || v.triage_category === "ESI-1",
-    )
-    if (erVisits.length > 0) {
-      list.push({
-        id: "er-census",
-        type: criticalEr.length > 0 ? "warning" : "info",
-        icon: "🚨",
-        title: `ER Census: ${erVisits.length} Active Patients`,
-        body: `${criticalEr.length} critical patient(s) in resuscitation/emergency bay`,
-        time: "5m ago",
-        target: "emergency",
-      })
+    try {
+      const erVisits = ErDatabase.getVisits("active")
+      if (Array.isArray(erVisits) && erVisits.length > 0) {
+        const criticalEr = erVisits.filter(
+          (v) => v && (v.triage_category === "B1" || v.triage_category === "ESI-1"),
+        )
+        list.push({
+          id: "er-census",
+          type: criticalEr.length > 0 ? "warning" : "info",
+          icon: "🚨",
+          title: `ER Census: ${erVisits.length} Active Patients`,
+          body: `${criticalEr.length} critical patient(s) in resuscitation/emergency bay`,
+          time: "5m ago",
+          target: "emergency",
+        })
+      }
+    } catch (e) {
+      console.warn("ER notifs error", e)
     }
 
     // 4. ICU Discharges
-    const icuDis = getDischargedIcuPatients()
-    if (icuDis.length > 0) {
-      list.push({
-        id: "icu-discharge",
-        type: "info",
-        icon: "📋",
-        title: `ICU Discharge Handoffs (${icuDis.length})`,
-        body: `${icuDis[0].patientName} ready for reception bed allocation`,
-        time: "15m ago",
-        target: "discharge",
-      })
+    try {
+      const icuDis = typeof getDischargedIcuPatients === "function" ? getDischargedIcuPatients() : []
+      if (Array.isArray(icuDis) && icuDis.length > 0) {
+        list.push({
+          id: "icu-discharge",
+          type: "info",
+          icon: "📋",
+          title: `ICU Discharge Handoffs (${icuDis.length})`,
+          body: `${icuDis[0]?.patientName || "Patient"} ready for reception bed allocation`,
+          time: "15m ago",
+          target: "discharge",
+        })
+      }
+    } catch (e) {
+      console.warn("ICU notifs error", e)
     }
 
     // 5. Today's Appointments
-    const encs = db.getEncounters()
-    if (encs.length > 0) {
-      list.push({
-        id: "op-appointments",
-        type: "info",
-        icon: "📅",
-        title: `Appointments: ${encs.length} Booked Today`,
-        body: `Next: ${encs[0].patientName} with ${encs[0].assignedDoctor}`,
-        time: "Today",
-        target: "appointments",
-      })
+    try {
+      const encs = typeof db?.getEncounters === "function" ? db.getEncounters() : []
+      if (Array.isArray(encs) && encs.length > 0) {
+        list.push({
+          id: "op-appointments",
+          type: "info",
+          icon: "📅",
+          title: `Appointments: ${encs.length} Booked Today`,
+          body: `Next: ${encs[0]?.patientName || "Patient"} with ${encs[0]?.assignedDoctor || "Physician"}`,
+          time: "Today",
+          target: "appointments",
+        })
+      }
+    } catch (e) {
+      console.warn("Appointments notifs error", e)
     }
 
-    // 6. HR: approvals waiting for me, leave decisions, expiring credentials,
-    // roster changes, payslips, announcements (derived server-side, like the rest).
-    for (const n of hrNotes) {
-      list.push({
-        id: `hr-${n.id}`,
-        type: n.severity === "warning" ? "warning" : "info",
-        icon: "👥",
-        title: n.title,
-        body: n.body ?? "",
-        time: n.at ? new Date(n.at).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "",
-        target: n.target === "approvals" ? "hr_leave" : "hrms",
-      })
+    // 6. HR Notes
+    if (Array.isArray(hrNotes)) {
+      for (const n of hrNotes) {
+        if (!n) continue
+        let timeStr = ""
+        if (n.at) {
+          try {
+            timeStr = new Date(n.at).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+          } catch {}
+        }
+        list.push({
+          id: `hr-${n.id || Math.random()}`,
+          type: n.severity === "warning" ? "warning" : "info",
+          icon: "👥",
+          title: n.title || "HR Notice",
+          body: n.body ?? "",
+          time: timeStr,
+          target: n.target === "approvals" ? "hr_leave" : "hrms",
+        })
+      }
     }
+
+    // 7. Pharmacy Operational Alerts
+    try {
+      const pharmNotifs = typeof PharmacyDatabase?.getNotifications === "function" ? PharmacyDatabase.getNotifications() : []
+      if (Array.isArray(pharmNotifs)) {
+        pharmNotifs.filter(p => !p.read && (p.type === "critical" || p.type === "warning")).slice(0, 2).forEach((pn) => {
+          list.push({
+            id: `ph-${pn.id}`,
+            type: pn.type === "critical" ? "critical" : "warning",
+            icon: "💊",
+            title: pn.title || "Pharmacy Alert",
+            body: pn.message || "",
+            time: "Today",
+            target: "pharmacy",
+            sub: "pharmacy_notifications",
+          })
+        })
+      }
+    } catch {}
 
     return list
   }, [hrNotes])
@@ -861,66 +960,75 @@ function NotificationPanel({
 
   const unreadCount = items.filter((i) => !readState[i.id]).length
 
+  useEffect(() => {
+    onUnreadChange?.(unreadCount)
+  }, [unreadCount, onUnreadChange])
+
   return (
-    <div className="fixed left-2 right-2 top-12 sm:absolute sm:left-auto sm:right-0 sm:top-full mt-1 sm:w-84 bg-white border border-[#DDE2EC] rounded shadow-xl z-50 overflow-hidden">
-      <div className="px-3.5 py-2.5 border-b border-[#DDE2EC] bg-[#FAFCFF] flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="text-[12.5px] font-bold text-gray-900">
-            Notifications
-          </span>
-          {unreadCount > 0 && (
-            <span className="text-[10px] font-bold bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-mono">
-              {unreadCount} New
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} aria-hidden="true" />
+      <div className="fixed left-2 right-2 top-12 sm:absolute sm:left-auto sm:right-0 sm:top-full mt-1 sm:w-84 bg-white border border-[#DDE2EC] rounded shadow-xl z-50 overflow-hidden">
+        <div className="px-3.5 py-2.5 border-b border-[#DDE2EC] bg-[#FAFCFF] flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-[12.5px] font-bold text-gray-900">
+              Notifications
             </span>
+            {unreadCount > 0 && (
+              <span className="text-[10px] font-bold bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-mono">
+                {unreadCount} New
+              </span>
+            )}
+          </div>
+          {unreadCount > 0 && (
+            <button
+              onClick={markAllRead}
+              className="text-[11px] text-[#1B4FD8] font-semibold hover:underline cursor-pointer"
+            >
+              Mark all read
+            </button>
           )}
         </div>
-        <button
-          onClick={markAllRead}
-          className="text-[11px] text-[#1B4FD8] font-semibold hover:underline cursor-pointer"
-        >
-          Mark all read
-        </button>
-      </div>
-      <div className="max-h-80 overflow-y-auto divide-y divide-[#F1F5F9]">
-        {items.length === 0 ? (
-          <div className="p-4 text-center text-xs text-gray-500">
-            No active notifications
-          </div>
-        ) : (
-          items.map((n) => {
-            const isRead = Boolean(readState[n.id])
-            return (
-              <div
-                key={n.id}
-                onClick={() => markSingleRead(n.id, n.target, n.sub)}
-                className={`flex gap-3 px-3.5 py-2.5 cursor-pointer hover:bg-blue-50/60 transition-colors ${!isRead ? "bg-[#F4F7FF]" : "bg-white"
-                  }`}
-              >
-                <span className="text-base mt-0.5">{n.icon}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-1">
-                    <span
-                      className={`text-[12px] truncate ${!isRead
-                        ? "font-bold text-gray-900"
-                        : "font-medium text-gray-700"
-                        }`}
-                    >
-                      {n.title}
-                    </span>
-                    <span className="text-[10px] text-gray-400 shrink-0 font-mono">
-                      {n.time}
-                    </span>
-                  </div>
-                  <div className="text-[11.5px] text-[#64748B] truncate mt-0.5">
-                    {n.body}
+        <div className="max-h-80 overflow-y-auto divide-y divide-[#F1F5F9]">
+          {items.length === 0 ? (
+            <div className="p-6 text-center text-xs text-gray-500">
+              <span className="text-xl block mb-1.5">🔔</span>
+              No active notifications
+            </div>
+          ) : (
+            items.map((n) => {
+              const isRead = Boolean(readState[n.id])
+              return (
+                <div
+                  key={n.id}
+                  onClick={() => markSingleRead(n.id, n.target, n.sub)}
+                  className={`flex gap-3 px-3.5 py-2.5 cursor-pointer hover:bg-blue-50/60 transition-colors ${!isRead ? "bg-[#F4F7FF]" : "bg-white"}`}
+                >
+                  <span className="text-base mt-0.5">{n.icon}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-1">
+                      <span
+                        className={`text-[12px] truncate ${!isRead
+                          ? "font-bold text-gray-900"
+                          : "font-medium text-gray-700"
+                          }`}
+                      >
+                        {n.title}
+                      </span>
+                      <span className="text-[10px] text-gray-400 shrink-0 font-mono">
+                        {n.time}
+                      </span>
+                    </div>
+                    <div className="text-[11.5px] text-[#64748B] truncate mt-0.5">
+                      {n.body}
+                    </div>
                   </div>
                 </div>
-              </div>
-            )
-          })
-        )}
+              )
+            })
+          )}
+        </div>
       </div>
-    </div>
+    </>
   )
 }
 
@@ -1496,6 +1604,7 @@ export default function App() {
   const [cmdOpen, setCmdOpen] = useState(false)
 
   const [notifOpen, setNotifOpen] = useState(false)
+  const [notifUnreadCount, setNotifUnreadCount] = useState(0)
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [messagesUnreadCount, setMessagesUnreadCount] = useState(3)
   const [globalApplyLeaveOpen, setGlobalApplyLeaveOpen] = useState(false)
@@ -2316,20 +2425,26 @@ export default function App() {
               {/* Notifications */}
               <div className="relative">
                 <button
+                  type="button"
                   onClick={() => setNotifOpen((n) => !n)}
                   className="relative w-8 h-8 flex items-center justify-center text-[#94A3B8] hover:text-white rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
                   title="Notifications"
                 >
                   <Icon.Bell />
-                  <span className="absolute top-0.5 right-0.5 w-3 h-3 bg-[#DC2626] rounded-full text-[8px] text-white font-bold flex items-center justify-center">
-                    1
-                  </span>
+                  {notifUnreadCount > 0 && (
+                    <span className="absolute top-0.5 right-0.5 min-w-[14px] h-3.5 px-0.5 bg-[#DC2626] rounded-full text-[8px] text-white font-bold flex items-center justify-center pointer-events-none">
+                      {notifUnreadCount > 9 ? "9+" : notifUnreadCount}
+                    </span>
+                  )}
                 </button>
                 {notifOpen && (
-                  <NotificationPanel
-                    onClose={() => setNotifOpen(false)}
-                    onNavigate={(m, s) => navigate(m, s)}
-                  />
+                  <NotificationErrorBoundary onClose={() => setNotifOpen(false)}>
+                    <NotificationPanel
+                      onClose={() => setNotifOpen(false)}
+                      onNavigate={(m, s) => navigate(m, s)}
+                      onUnreadChange={(count) => setNotifUnreadCount(count)}
+                    />
+                  </NotificationErrorBoundary>
                 )}
               </div>
 
