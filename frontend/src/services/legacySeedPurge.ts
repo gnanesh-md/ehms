@@ -45,7 +45,7 @@ export const SEED_LAB_ORDERS: readonly SeedFingerprint[] = [
 export function purgeAllLegacySeedData(force = false): void {
   if (typeof window === "undefined") return
 
-  const PURGE_FLAG = "hospai_seeds_purged_v43"
+  const PURGE_FLAG = "hospai_seeds_purged_v44"
   if (!force && localStorage.getItem(PURGE_FLAG) === "true") return
 
   // Remove legacy storage keys completely
@@ -96,6 +96,10 @@ export function purgeAllLegacySeedData(force = false): void {
     "hospai_billing_ar_v1",
     "hosp_discharged_patients_v1",
     "hospai_discharged_patients_v3",
+    "hospai_inpatient_beds_v9",
+    "hospai_inpatient_beds_v8",
+    "hospai_inpatient_beds_v7",
+    "hospai_inpatient_beds",
     "hospai_bed_transfer_notifications_v3",
     "hospai_pending_bed_allocation_v2",
     "hospai_rad_appointments_v1",
@@ -201,18 +205,12 @@ export function purgeAllLegacySeedData(force = false): void {
     localStorage.removeItem("hospai_rbac_roles_v27")
   } catch {}
 
-  // Sanitize bed registry so all physical beds are 100% Available with no mock patients
+  // Ensure bed registry is completely clean with 0 beds by default
   try {
-    const cleanBeds = [
-      { id: 1, ward: "ICU", room_no: "ICU-01", bed_no: "B1", bed_type: "ICU", status: "Available", daily_rate: 5500, allocation_id: null, admission_id: null, allocated_at: null, admission_date: null, expected_discharge_date: null, patient_id: null, patient_name: null, patient_last_name: null, patient_phone: null, patient_age: null, patient_gender: null, admission_notes: null, room_charges_so_far: null },
-      { id: 2, ward: "ICU", room_no: "ICU-02", bed_no: "B2", bed_type: "ICU", status: "Available", daily_rate: 5500, allocation_id: null, admission_id: null, allocated_at: null, admission_date: null, expected_discharge_date: null, patient_id: null, patient_name: null, patient_last_name: null, patient_phone: null, patient_age: null, patient_gender: null, admission_notes: null, room_charges_so_far: null },
-      { id: 3, ward: "General Ward", room_no: "GW-101", bed_no: "B1", bed_type: "General", status: "Available", daily_rate: 2000, allocation_id: null, admission_id: null, allocated_at: null, admission_date: null, expected_discharge_date: null, patient_id: null, patient_name: null, patient_last_name: null, patient_phone: null, patient_age: null, patient_gender: null, admission_notes: null, room_charges_so_far: null },
-      { id: 4, ward: "General Ward", room_no: "GW-101", bed_no: "B2", bed_type: "General", status: "Available", daily_rate: 2000, allocation_id: null, admission_id: null, allocated_at: null, admission_date: null, expected_discharge_date: null, patient_id: null, patient_name: null, patient_last_name: null, patient_phone: null, patient_age: null, patient_gender: null, admission_notes: null, room_charges_so_far: null },
-      { id: 5, ward: "Semi-Private", room_no: "SP-201", bed_no: "B1", bed_type: "Semi-Private", status: "Available", daily_rate: 3500, allocation_id: null, admission_id: null, allocated_at: null, admission_date: null, expected_discharge_date: null, patient_id: null, patient_name: null, patient_last_name: null, patient_phone: null, patient_age: null, patient_gender: null, admission_notes: null, room_charges_so_far: null },
-      { id: 6, ward: "Semi-Private", room_no: "SP-201", bed_no: "B2", bed_type: "Semi-Private", status: "Available", daily_rate: 3500, allocation_id: null, admission_id: null, allocated_at: null, admission_date: null, expected_discharge_date: null, patient_id: null, patient_name: null, patient_last_name: null, patient_phone: null, patient_age: null, patient_gender: null, admission_notes: null, room_charges_so_far: null },
-      { id: 7, ward: "Private", room_no: "PV-301", bed_no: "B1", bed_type: "Private", status: "Available", daily_rate: 5000, allocation_id: null, admission_id: null, allocated_at: null, admission_date: null, expected_discharge_date: null, patient_id: null, patient_name: null, patient_last_name: null, patient_phone: null, patient_age: null, patient_gender: null, admission_notes: null, room_charges_so_far: null },
-    ]
-    localStorage.setItem("hospai_inpatient_beds_v9", JSON.stringify(cleanBeds))
+    localStorage.setItem("hospai_inpatient_beds_v9", "[]")
+    localStorage.removeItem("hospai_inpatient_beds_v8")
+    localStorage.removeItem("hospai_inpatient_beds_v7")
+    localStorage.removeItem("hospai_inpatient_beds")
   } catch {}
 
   // Clear all patient-specific dynamic keys, vitals, diagnoses, evaluations, ICU flowsheets
