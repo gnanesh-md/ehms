@@ -78,6 +78,7 @@ import {
   type ErVisitRecord,
   type ErPatientMedicalProfile,
 } from "../services/erDb"
+import { getDoctorMaster } from "../services/doctorMaster"
 
 
 import {
@@ -127,148 +128,62 @@ async function uploadConsentDocument(
 
 // ── On-Duty Emergency Physicians & Specialists Roster ────────────────────────
 
+export function getErOnDutyPhysicians(): {
+  name: string
+  specialty: string
+  department: string
+}[] {
+  const master = getDoctorMaster().filter((d) => d.verified)
+  return master.map((d) => ({
+    name: d.name,
+    specialty: d.specialty || "Emergency Medicine",
+    department: d.specialty || "Emergency Medicine",
+  }))
+}
+
 export const ER_ON_DUTY_PHYSICIANS: {
   name: string
   specialty: string
   department: string
-}[] = [
-  {
-    name: "Dr. Anita Roy",
-    specialty: "Emergency & Critical Care",
-    department: "Emergency Medicine",
+}[] = new Proxy([] as any, {
+  get(target, prop, receiver) {
+    const list = getErOnDutyPhysicians()
+    if (prop === "length") return list.length
+    if (prop === "map") return list.map.bind(list)
+    if (prop === "find") return list.find.bind(list)
+    if (prop === "filter") return list.filter.bind(list)
+    if (prop === "some") return list.some.bind(list)
+    if (prop === "forEach") return list.forEach.bind(list)
+    if (typeof prop === "string" && !isNaN(Number(prop))) return list[Number(prop)]
+    return Reflect.get(list, prop, receiver)
   },
-
-  {
-    name: "Dr. Vikram Seth",
-    specialty: "Cardiology / Critical Care",
-    department: "Cardiology",
-  },
-
-  {
-    name: "Dr. Sanjay Gupta",
-    specialty: "Orthopedics & Trauma Surgery",
-    department: "Orthopedics",
-  },
-
-  {
-    name: "Dr. Meenakshi Rao",
-    specialty: "Neurology & Acute Stroke",
-    department: "Neurology",
-  },
-
-  {
-    name: "Dr. Priya Deshmukh",
-    specialty: "General & Trauma Surgery",
-    department: "General Surgery",
-  },
-
-  {
-    name: "Dr. Rajesh Sharma",
-    specialty: "Internal & General Medicine",
-    department: "General Medicine",
-  },
-
-  {
-    name: "Dr. Sarah Jenkins",
-    specialty: "Emergency & Resuscitation",
-    department: "Emergency Medicine",
-  },
-
-  {
-    name: "Dr. Arjun Mehta",
-    specialty: "Cardiology & Interventional Care",
-    department: "Cardiology",
-  },
-
-  {
-    name: "Dr. David Anderson",
-    specialty: "Trauma Orthopedics",
-    department: "Orthopedics",
-  },
-]
+})
 
 export function getSuggestedDoctorForPatient(detail?: {
   complaints?: { complaint: string }[]
-
   condition_at_arrival?: string | null
-
   triage_category?: string | null
-
   assigned_specialty?: string | null
-
   assigned_doctor_name?: string | null
 }): string {
   if (detail?.assigned_doctor_name) return detail.assigned_doctor_name
-
-  if (!detail) return "Dr. Anita Roy"
+  const roster = getErOnDutyPhysicians()
+  if (roster.length === 0) return ""
 
   const complaintStr = [
-    ...(detail.complaints || []).map((c) => c.complaint),
-
-    detail.condition_at_arrival || "",
-
-    detail.assigned_specialty || "",
+    ...(detail?.complaints || []).map((c) => c.complaint),
+    detail?.condition_at_arrival || "",
+    detail?.assigned_specialty || "",
   ]
     .join(" ")
     .toLowerCase()
 
-  if (
-    complaintStr.includes("heart") ||
-    complaintStr.includes("cardiac") ||
-    complaintStr.includes("chest") ||
-    complaintStr.includes("stemi") ||
-    complaintStr.includes("ecg") ||
-    complaintStr.includes("angina")
-  ) {
-    return "Dr. Vikram Seth"
-  }
-
-  if (
-    complaintStr.includes("trauma") ||
-    complaintStr.includes("fracture") ||
-    complaintStr.includes("accident") ||
-    complaintStr.includes("rta") ||
-    complaintStr.includes("fall") ||
-    complaintStr.includes("bone")
-  ) {
-    return "Dr. Sanjay Gupta"
-  }
-
-  if (
-    complaintStr.includes("stroke") ||
-    complaintStr.includes("headache") ||
-    complaintStr.includes("seizure") ||
-    complaintStr.includes("weakness") ||
-    complaintStr.includes("paralysis") ||
-    complaintStr.includes("neuro")
-  ) {
-    return "Dr. Meenakshi Rao"
-  }
-
-  if (
-    complaintStr.includes("abdomen") ||
-    complaintStr.includes("appendix") ||
-    complaintStr.includes("vomiting") ||
-    complaintStr.includes("peritonitis") ||
-    complaintStr.includes("laceration") ||
-    complaintStr.includes("surgery")
-  ) {
-    return "Dr. Priya Deshmukh"
-  }
-
-  if (
-    complaintStr.includes("fever") ||
-    complaintStr.includes("cough") ||
-    complaintStr.includes("infection") ||
-    complaintStr.includes("sugar") ||
-    complaintStr.includes("diabetes") ||
-    complaintStr.includes("poisoning") ||
-    complaintStr.includes("general")
-  ) {
-    return "Dr. Rajesh Sharma"
-  }
-
-  return "Dr. Anita Roy"
+  const match = roster.find(
+    (d) =>
+      complaintStr.includes(d.specialty.toLowerCase()) ||
+      complaintStr.includes(d.department.toLowerCase()),
+  )
+  return match ? match.name : roster[0]?.name || ""
 }
 
 export function getSuggestedSpecialtyForPatient(detail?: {

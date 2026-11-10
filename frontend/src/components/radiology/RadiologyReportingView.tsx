@@ -95,7 +95,7 @@ const COMMON_APPROVED_PHRASES = [
 export default function RadiologyReportingView({
   initialStudyId,
   initialFilter = "all",
-  currentTechnician = "Dr. Rajesh Sharma, MD",
+  currentTechnician = "Radiologist",
   currentRole = "Senior Radiologist & HOD",
   onNavigateToWorklist,
   onNavigateToTemplates,

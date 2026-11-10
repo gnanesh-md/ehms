@@ -2368,7 +2368,7 @@ export class GeneralReportsService {
         patient: d.patientName,
         ward: d.ward,
         bed: d.bedNo,
-        doctor: d.attendingDoctor || "Dr. Staff Physician",
+        doctor: d.attendingDoctor || "",
         admissionDate: d.admissionDate,
         dischargeDate: d.dischargeDate,
         status: "Discharged",
@@ -3345,7 +3345,7 @@ export class GeneralReportsService {
         rawTimestamp: p.createdAt || dStr,
         umr: (p as any).umr || p.patientId || "UMR100412",
         patient: p.patientName,
-        doctor: p.doctorName || "Dr. Staff Physician",
+        doctor: p.doctorName || "",
         medicines:
           p.items?.map((i) => `${i.medicineName} (${i.quantity})`).join(", ") ||
           "Standard Meds",
@@ -3562,7 +3562,7 @@ export class GeneralReportsService {
         rawTimestamp: o.createdAt || dStr,
         umr: o.umr,
         patient: o.patientName,
-        doctor: o.doctorName || "Dr. Staff Physician",
+        doctor: o.doctorName || "",
         test: o.tests?.map((t) => t.name).join(", ") || "Diagnostic Test",
         status: o.status,
         resultStatus:
@@ -3811,7 +3811,7 @@ export class GeneralReportsService {
         date: displayDate,
         umr: r.umr || r.mrn || "UMR100412",
         patient: r.patient,
-        doctor: r.provider || "Dr. Staff Physician",
+        doctor: r.provider || "",
         scanType: r.study,
         modality: r.modality,
         status: r.status,
@@ -4122,7 +4122,7 @@ export class GeneralReportsService {
       const isEr = (disc as any).admissionType === "Emergency" || (disc.dischargeReason || "").toLowerCase().includes("emergency")
       const admType: "Emergency" | "Planned" | "Direct ICU" = isIcu ? "Direct ICU" : isEr ? "Emergency" : "Planned"
       const ward = disc.ward || "Inpatient Wards"
-      const doc = disc.attendingDoctor || "Dr. Staff Physician"
+      const doc = disc.attendingDoctor || ""
 
       admissionsList.push({
         id: admId,
@@ -4532,7 +4532,7 @@ export class GeneralReportsService {
       umr: d.mrn || d.patientId,
       patient: d.patientName,
       department: d.ward,
-      doctor: d.attendingDoctor || "Dr. Staff Physician",
+      doctor: d.attendingDoctor || "",
       admissionDate: d.admissionDate,
       dischargeDate: d.dischargeDate,
       lengthOfStay: `${d.lengthOfStayDays || 1} days`,

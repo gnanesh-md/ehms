@@ -149,7 +149,7 @@ app.use('/api', (req, res) => {
 if (process.env.NODE_ENV !== 'test') {
   // Best-effort: with Postgres down the in-memory engine still serves requests.
   ensureSchema().catch(() => {}).finally(() => {
-    app.listen(PORT, '0.0.0.0', () => {
+    app.listen(PORT, () => {
       console.log(`[HospAI HRMS Backend] Running on http://localhost:${PORT}`);
     });
   });

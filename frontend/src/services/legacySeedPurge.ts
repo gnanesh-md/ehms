@@ -45,8 +45,20 @@ export const SEED_LAB_ORDERS: readonly SeedFingerprint[] = [
 export function purgeAllLegacySeedData(force = false): void {
   if (typeof window === "undefined") return
 
-  const PURGE_FLAG = "hospai_seeds_purged_v16"
+  const PURGE_FLAG = "hospai_seeds_purged_v43"
   if (!force && localStorage.getItem(PURGE_FLAG) === "true") return
+
+  // Remove legacy storage keys completely
+  try {
+    localStorage.removeItem("hospai_patient_notifications_v1")
+    localStorage.removeItem("hospai_doctor_master")
+    localStorage.removeItem("hospai_doctor_master_v1")
+    localStorage.removeItem("hospai_doctor_master_v2")
+    localStorage.removeItem("hospai_login_last_role")
+    localStorage.removeItem("hospai_current_user")
+    localStorage.removeItem("hospai_last_user")
+    localStorage.removeItem("hospai_saved_credentials")
+  } catch {}
 
   const keysToResetEmptyArray = [
     "hospai_doctor_master_v3",
@@ -90,6 +102,7 @@ export function purgeAllLegacySeedData(force = false): void {
     "hospai_rad_exceptions_v1",
     "hospai_rad_templates_v1",
     "hospai_rad_templates_v2",
+    "hospai_patient_notifications_v1",
     "hms_nursing_assignments",
     "hms_nursing_doctor_instructions",
     "hms_nursing_notes",
@@ -143,7 +156,7 @@ export function purgeAllLegacySeedData(force = false): void {
       {
         id: "U_ADMIN",
         username: "admin",
-        password: "password123",
+        password: "Admin@123",
         roleId: "ROLE_ADMIN",
         name: "System Administrator",
         staffId: "ADM-001",
@@ -151,6 +164,7 @@ export function purgeAllLegacySeedData(force = false): void {
       },
     ]
     localStorage.setItem("hospai_rbac_users_v2", JSON.stringify(adminUser))
+    localStorage.setItem("hospai_rbac_users_v3", JSON.stringify(adminUser))
 
     // Set default single system administrator role (all other roles removed)
     const adminRoles = [

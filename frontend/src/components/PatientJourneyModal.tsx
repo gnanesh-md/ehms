@@ -19,9 +19,11 @@ import {
 import { SendToPatientButton } from "./messaging/SendToPatientDialog"
 import {
   sendPatientMessage,
+  notifyPatientCalledToNurse,
   whatsAppHandoffUrl,
   emailHandoffUrl,
 } from "../services/patientMessaging"
+import toast from "react-hot-toast"
 import { patientPageUrl } from "./patientRecord/patientRecord"
 import JourneyReportPrintModal from "./opcard/JourneyReportPrintModal"
 import { printJourneyDocument } from "../utils/journeyPrint"
@@ -730,20 +732,34 @@ export default function PatientJourneyModal({
                           </div>
                         </>
                       ) : (
-                        <div className="text-[11.5px] text-amber-800 bg-amber-50 p-2.5 rounded-none border border-amber-200 flex items-center justify-between">
+                        <div className="text-[11.5px] text-amber-800 bg-amber-50 p-2.5 rounded-none border border-amber-200 flex items-center justify-between gap-2 flex-wrap">
                           <span>⏳ <strong>Awaiting Nurse Triage:</strong> Baseline physiological vitals have not yet been recorded.</span>
-                          {onNavigateToOPWorkflow && (
+                          <div className="flex items-center gap-2">
                             <button
                               type="button"
                               onClick={() => {
-                                onClose()
-                                onNavigateToOPWorkflow(liveEncounter.id, 3)
+                                db.callToNurseStation(liveEncounter.id, "Patient Journey")
+                                notifyPatientCalledToNurse(liveEncounter, "OP Nurse Station", "Room 102")
+                                toast.success(`Patient ${liveEncounter.patientName} called to Nurse Station!`)
                               }}
-                              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] rounded-none cursor-pointer"
+                              className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white font-bold text-[11px] rounded-none cursor-pointer flex items-center gap-1 shadow-xs"
                             >
-                              Triage Nurse Station →
+                              <span>🩺</span>
+                              <span>Call to Nurse Station</span>
                             </button>
-                          )}
+                            {onNavigateToOPWorkflow && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onClose()
+                                  onNavigateToOPWorkflow(liveEncounter.id, 3)
+                                }}
+                                className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] rounded-none cursor-pointer"
+                              >
+                                Triage Nurse Station →
+                              </button>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>

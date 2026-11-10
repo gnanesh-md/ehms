@@ -51,7 +51,7 @@ export interface AppUser {
 // v28: Guaranteed full pharmacy submodules across Doctor and Pharmacist roles.
 const ROLES_STORAGE_KEY = "hospai_rbac_roles_v29"
 
-const USERS_STORAGE_KEY = "hospai_rbac_users_v2"
+const USERS_STORAGE_KEY = "hospai_rbac_users_v3"
 
 export const ALL_SYSTEM_MODULES = [
   "dashboard",
@@ -550,96 +550,6 @@ export function getInitialUsers(): AppUser[] {
       staffId: "ADM-001",
       status: "Active",
     },
-    {
-      id: "U_LAB",
-      username: "lab",
-      password: "password123",
-      roleId: "ROLE_LAB_TECHNICIAN",
-      name: "Laboratory Technician",
-      staffId: "LAB-001",
-      status: "Active",
-    },
-    {
-      id: "U_PHARMACY",
-      username: "pharmacy",
-      password: "password123",
-      roleId: "ROLE_PHARMACIST",
-      name: "Hospital Pharmacist",
-      staffId: "PHM-001",
-      status: "Active",
-    },
-    {
-      id: "U_NURSE",
-      username: "nurse",
-      password: "password123",
-      roleId: "ROLE_NURSE",
-      name: "Staff Nurse",
-      staffId: "NUR-001",
-      status: "Active",
-    },
-    {
-      id: "U_RECEPTION",
-      username: "reception",
-      password: "password123",
-      roleId: "ROLE_RECEPTIONIST",
-      name: "Front Office Receptionist",
-      staffId: "REC-001",
-      status: "Active",
-    },
-    {
-      id: "U_BILLING",
-      username: "billing",
-      password: "password123",
-      roleId: "ROLE_BILLING_EXECUTIVE",
-      name: "Billing Executive",
-      staffId: "BIL-001",
-      status: "Active",
-    },
-    {
-      id: "U_INSURANCE",
-      username: "insurance",
-      password: "password123",
-      roleId: "ROLE_INSURANCE_TPA_OFFICER",
-      name: "Insurance Officer",
-      staffId: "INS-001",
-      status: "Active",
-    },
-    {
-      id: "U_FINANCE",
-      username: "finance",
-      password: "password123",
-      roleId: "ROLE_ACCOUNTANT",
-      name: "Accountant",
-      staffId: "ACC-001",
-      status: "Active",
-    },
-    {
-      id: "U_HR",
-      username: "hr",
-      password: "password123",
-      roleId: "ROLE_HR_MANAGER",
-      name: "HR Manager",
-      staffId: "HR-001",
-      status: "Active",
-    },
-    {
-      id: "U_RADIOLOGY",
-      username: "radiology",
-      password: "password123",
-      roleId: "ROLE_RADIOLOGIST",
-      name: "Radiologist",
-      staffId: "RAD-001",
-      status: "Active",
-    },
-    {
-      id: "U_DOCTOR",
-      username: "doctor",
-      password: "password123",
-      roleId: "ROLE_DOCTOR",
-      name: "Dr. Vikram Seth",
-      staffId: "DOC-001",
-      status: "Active",
-    },
   ]
 }
 
@@ -735,16 +645,28 @@ export class RoleDatabase {
       }
 
       const users: AppUser[] = JSON.parse(stored)
-      const legacySeedRoleIds = new Set([
-        "ROLE_DOCTOR",
+      const dummyUsernames = new Set([
+        "lab", "pharmacy", "nurse", "reception", "billing",
+        "insurance", "finance", "hr", "radiology", "doctor", "employee"
+      ])
+      const dummyStaffIds = new Set([
+        "LAB-001", "PHM-001", "NUR-001", "REC-001", "BIL-001",
+        "INS-001", "ACC-001", "HR-001", "RAD-001", "DOC-001", "EMP-001"
+      ])
+      const dummyIds = new Set([
+        "U_LAB", "U_PHARMACY", "U_NURSE", "U_RECEPTION", "U_BILLING",
+        "U_INSURANCE", "U_FINANCE", "U_HR", "U_RADIOLOGY", "U_DOCTOR", "U_EMPLOYEE"
       ])
       const filtered = (users || []).filter(
         (u) =>
           u &&
-          !String(u.staffId).startsWith("STF-DOC-") &&
-          !String(u.id).startsWith("DOC-") &&
-          !String(u.username).startsWith("dr.") &&
-          (u.username === "admin" || !legacySeedRoleIds.has(u.roleId))
+          (u.username === "admin" ||
+            (!dummyUsernames.has((u.username || "").toLowerCase()) &&
+             !dummyStaffIds.has(String(u.staffId || "").toUpperCase()) &&
+             !dummyIds.has(String(u.id || "").toUpperCase()) &&
+             !String(u.staffId || "").startsWith("STF-DOC-") &&
+             !String(u.id || "").startsWith("DOC-") &&
+             !String(u.username || "").startsWith("dr.")))
       )
 
       if (!filtered.some((u) => u.username === "admin")) {
@@ -767,9 +689,7 @@ export class RoleDatabase {
       // Ensure all doctors from Doctor Master (hospai_doctor_master_v3) are automatically
       // registered as active AppUsers with assigned roles and credentials
       try {
-        const storedDocs =
-          window.localStorage.getItem("hospai_doctor_master_v3") ||
-          window.localStorage.getItem("hospai_doctor_master")
+        const storedDocs = window.localStorage.getItem("hospai_doctor_master_v3")
         if (storedDocs) {
           const docs: Array<{
             id: string

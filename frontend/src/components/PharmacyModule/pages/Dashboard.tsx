@@ -160,25 +160,33 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     const list: typeof prescriptions = []
     const seen = new Set<string>()
 
-    // Pending prescriptions first (newest pending first)
-    pendingPrescriptions.forEach((p) => {
+    const isUndispensed = (p: typeof prescriptions[0]) => {
+      if (!p) return false
+      const st = (p.status || "").toLowerCase()
+      const stage = ((p as any).stage || "").toLowerCase()
+      const dispStatus = (((p as any).dispensingStatus) || "").toLowerCase()
+      return st !== "dispensed" && stage !== "dispensed" && dispStatus !== "dispensed"
+    }
+
+    // Pending unfulfilled prescriptions first (newest pending first)
+    pendingPrescriptions.filter(isUndispensed).forEach((p) => {
       if (!seen.has(p.id)) {
         seen.add(p.id)
         list.push(p)
       }
     })
 
-    // Today's / selected date prescriptions
-    selectedDatePrescriptions.forEach((p) => {
+    // Today's / selected date prescriptions that are still awaiting dispensing
+    selectedDatePrescriptions.filter(isUndispensed).forEach((p) => {
       if (!seen.has(p.id)) {
         seen.add(p.id)
         list.push(p)
       }
     })
 
-    // Fallback if none in current filter
+    // Fallback if none in current filter: only show active unfulfilled
     if (list.length === 0) {
-      prescriptions.slice(0, 5).forEach((p) => {
+      prescriptions.filter(isUndispensed).slice(0, 5).forEach((p) => {
         if (!seen.has(p.id)) {
           seen.add(p.id)
           list.push(p)

@@ -2533,8 +2533,8 @@ export function printRadiologyDocument(study: RadiologyStudyRecord, defaultCatal
 }
 
 export default function Radiology({
-  technician = "Dr. Rajesh Sharma, MD",
-  role = "Senior Radiologist & HOD",
+  technician = "Radiologist",
+  role = "Radiologist",
   initialTab = "overview",
   departmentScope = "all",
   initialStudyId = null,

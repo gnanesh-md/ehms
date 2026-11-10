@@ -1133,14 +1133,20 @@ export default function Dispensing({ onNavigate }: DispensingProps) {
 
     const totalPrescribed = loadedRxMeta?.items?.length || 0
     const isPartial = totalPrescribed > 0 && cart.length < totalPrescribed
-    const newDispensingStatus = isPartial ? "Partially Dispensed" : "Dispensed"
+    // Available items have been sold; mark prescription as fully Dispensed so it leaves active queue
+    const newDispensingStatus = "Dispensed"
 
     if (rxId) {
       PharmacyDatabase.updatePrescription(rxId, {
-        status: newDispensingStatus,
-        dispensingStatus: newDispensingStatus,
+        status: "Dispensed",
+        dispensingStatus: "Dispensed",
         paidAmount: finalAmount,
         remainingDue: 0,
+        dispensedAt: new Date().toISOString(),
+        partiallyDispensed: isPartial,
+        dispensingNotes: isPartial
+          ? `Sold available ${cart.length} of ${totalPrescribed} prescribed medicines from active inventory.`
+          : "All prescribed medicines dispensed.",
       } as any)
     }
 

@@ -136,6 +136,7 @@ import OnDutyStrip from "./components/hr/OnDutyStrip"
 import { HrmsDatabase } from "./services/hrmsDb"
 import HRMS from "./components/HRMS"
 import ApplyLeaveModal from "./components/hrms/ApplyLeaveModal"
+import { AdminCredentialsModal } from "./components/AdminCredentialsModal"
 
 import Admissions from "./components/Admissions"
 
@@ -169,6 +170,7 @@ import {
   getAllDoctorAccounts,
   DOCTOR_ROSTER,
 } from "./services/doctorPortalDb"
+import { syncDoctorMasterFromBackend } from "./services/doctorMaster"
 
 import { ALL_SYSTEM_MODULES } from "./services/roleDb"
 
@@ -1311,6 +1313,7 @@ export default function App() {
   const [adminDoctorView, setAdminDoctorView] = useState<"workspace" | "overview">("workspace")
 
   const [roleMenuOpen, setRoleMenuOpen] = useState(false)
+  const [showAdminCredentialsModal, setShowAdminCredentialsModal] = useState(false)
 
   const [notice, setNotice] = useState<Notice | null>(null)
 
@@ -1569,6 +1572,10 @@ export default function App() {
 
   // Check route access
   useEffect(() => {
+    syncDoctorMasterFromBackend().catch(() => {})
+  }, [loggedIn, module])
+
+  useEffect(() => {
     if (!loggedIn) return
     if (isSuperAdminUser) return
 
@@ -1615,23 +1622,28 @@ export default function App() {
 
     const roleIdUpper = (userData.role || "").toUpperCase()
     const userRoleKey = userData.user.trim().toLowerCase()
+    const isSuperAdmin =
+      roleIdUpper === "ROLE_ADMIN" ||
+      roleIdUpper === "ROLE_SUPERADMIN" ||
+      userRoleKey === "admin"
 
     const isDoctor =
-      roleIdUpper === "ROLE_DOCTOR" ||
-      roleIdUpper.includes("DOCTOR") ||
-      roleIdUpper.includes("SURGEON") ||
-      roleIdUpper.includes("PHYSICIAN") ||
-      roleIdUpper.includes("CLINICIAN") ||
-      Boolean(userData.doctorId) ||
-      userRoleKey.startsWith("doctor") ||
-      userRoleKey.startsWith("doc") ||
-      (userData.staffName || "").toLowerCase().startsWith("dr.") ||
-      Boolean(
-        resolvedDoctor &&
-          (resolvedDoctor.username.toLowerCase() === userRoleKey ||
-            resolvedDoctor.id.toLowerCase() === userRoleKey ||
-            resolvedDoctor.staffId.toLowerCase() === userRoleKey),
-      )
+      !isSuperAdmin &&
+      (roleIdUpper === "ROLE_DOCTOR" ||
+        roleIdUpper.includes("DOCTOR") ||
+        roleIdUpper.includes("SURGEON") ||
+        roleIdUpper.includes("PHYSICIAN") ||
+        roleIdUpper.includes("CLINICIAN") ||
+        Boolean(userData.doctorId) ||
+        userRoleKey.startsWith("doctor") ||
+        userRoleKey.startsWith("doc") ||
+        (userData.staffName || "").toLowerCase().startsWith("dr.") ||
+        Boolean(
+          resolvedDoctor &&
+            (resolvedDoctor.username.toLowerCase() === userRoleKey ||
+              resolvedDoctor.id.toLowerCase() === userRoleKey ||
+              resolvedDoctor.staffId.toLowerCase() === userRoleKey),
+        ))
 
     const doctor = isDoctor ? resolvedDoctor : null
     setActiveDoctor(doctor)
@@ -2409,17 +2421,30 @@ export default function App() {
                     })}
                     <div className="border-t border-[#E2E8F0] pt-1 mt-1">
                       {(userRole === "ROLE_ADMIN" || userRole === "admin" || activeStaff?.id === "ADM-001" || userPermissions.includes("admin") || userPermissions.includes("*")) && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setRoleMenuOpen(false)
-                            setModule("admin")
-                          }}
-                          className="w-full text-left px-2.5 py-1.5 text-[11px] text-[#1B4FD8] hover:bg-blue-50 font-bold rounded transition-colors flex items-center gap-2 cursor-pointer mb-1"
-                        >
-                          <span>⚙️</span>
-                          <span>Administration &amp; RBAC</span>
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRoleMenuOpen(false)
+                              setModule("admin")
+                            }}
+                            className="w-full text-left px-2.5 py-1.5 text-[11px] text-[#1B4FD8] hover:bg-blue-50 font-bold rounded transition-colors flex items-center gap-2 cursor-pointer mb-1"
+                          >
+                            <span>⚙️</span>
+                            <span>Administration &amp; RBAC</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRoleMenuOpen(false)
+                              setShowAdminCredentialsModal(true)
+                            }}
+                            className="w-full text-left px-2.5 py-1.5 text-[11px] text-[#059669] hover:bg-emerald-50 font-bold rounded transition-colors flex items-center gap-2 cursor-pointer mb-1"
+                          >
+                            <span>🔑</span>
+                            <span>Edit Admin Credentials</span>
+                          </button>
+                        </>
                       )}
                       <button
                         onClick={handleLogout}
@@ -3662,6 +3687,24 @@ export default function App() {
               loggedInStaffId={activeStaff.id}
               loggedInStaffName={activeStaff.name}
               isSelfService={userRole !== "ROLE_ADMIN" && userRole !== "ROLE_SUPERADMIN" && userRole !== "ROLE_HR"}
+            />
+          )}
+
+          {showAdminCredentialsModal && (
+            <AdminCredentialsModal
+              isOpen={showAdminCredentialsModal}
+              onClose={() => setShowAdminCredentialsModal(false)}
+              onSaved={(updated) => {
+                setActiveStaff((prev) => ({
+                  ...prev,
+                  name: updated.name,
+                }))
+                setNotice({
+                  type: "success",
+                  message: `System Administrator credentials updated successfully (@${updated.username}).`,
+                })
+                setTimeout(() => setNotice(null), 5000)
+              }}
             />
           )}
         </>

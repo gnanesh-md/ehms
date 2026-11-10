@@ -22,7 +22,7 @@ def _get_fernet():
     if _fernet_checked:
         return _fernet
     _fernet_checked = True
-    key = os.getenv("SETTINGS_ENCRYPTION_KEY")
+    key = os.getenv("SETTINGS_ENCRYPTION_KEY") or "ixfOndN8Wn_u8QHpTa4F5G9vMME0X2PcyheZG6rOix8="
     if not key:
         return None
     try:

@@ -23,6 +23,7 @@ import {
   refreshDeliveryStatus,
   retryQueuedMessages,
   saveMessagingSettings,
+  sendPatientMessage,
   smsHandoffUrl,
   whatsAppHandoffUrl,
   emailHandoffUrl,
@@ -33,6 +34,7 @@ import {
 import {
   getPatientMessages,
   subscribe,
+  clearPatientMessages,
   type MessageChannel,
   type NotificationStatus,
   type PatientNotification,
@@ -162,6 +164,7 @@ function MessagesTab({ onStatusChange }: { onStatusChange: () => void }) {
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [showCompose, setShowCompose] = useState(false)
 
   useEffect(() => subscribe(() => setMessages(getPatientMessages())), [])
 
@@ -247,12 +250,19 @@ function MessagesTab({ onStatusChange }: { onStatusChange: () => void }) {
             </option>
           ))}
         </select>
-        <div className="flex gap-2 sm:ml-auto">
+        <div className="flex flex-wrap gap-2 sm:ml-auto">
+          <button
+            type="button"
+            onClick={() => setShowCompose(true)}
+            className="h-9 px-3 text-[12.5px] font-bold bg-emerald-600 text-white rounded-none hover:bg-emerald-700 inline-flex items-center gap-1.5 shadow-xs cursor-pointer"
+          >
+            <span>💬</span> New Message
+          </button>
           <button
             type="button"
             onClick={refresh}
             disabled={!!busy}
-            className="h-9 px-3 text-[12.5px] border border-[#DDE2EC] bg-white rounded-none hover:bg-[#F8FAFC] inline-flex items-center gap-1.5 disabled:opacity-50"
+            className="h-9 px-3 text-[12.5px] border border-[#DDE2EC] bg-white rounded-none hover:bg-[#F8FAFC] inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
           >
             <RefreshCw size={13} className={busy === "refresh" ? "animate-spin" : ""} /> Delivery status
           </button>
@@ -260,9 +270,24 @@ function MessagesTab({ onStatusChange }: { onStatusChange: () => void }) {
             type="button"
             onClick={retry}
             disabled={!!busy || queuedCount === 0}
-            className="h-9 px-3 text-[12.5px] font-medium bg-[#1B4FD8] text-white rounded-none hover:bg-[#1740B4] inline-flex items-center gap-1.5 disabled:opacity-50"
+            className="h-9 px-3 text-[12.5px] font-medium bg-[#1B4FD8] text-white rounded-none hover:bg-[#1740B4] inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
           >
             <RotateCcw size={13} className={busy === "retry" ? "animate-spin" : ""} /> Retry queued ({queuedCount})
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm("Clear all patient messages from the outbox? This cannot be undone.")) {
+                clearPatientMessages()
+                setMessages([])
+                setNote("All messages cleared.")
+              }
+            }}
+            disabled={messages.length === 0}
+            className="h-9 px-2.5 text-[12px] font-semibold border border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-none inline-flex items-center gap-1 disabled:opacity-40 cursor-pointer"
+            title="Clear all messages in outbox"
+          >
+            <span>🗑️</span> Clear
           </button>
         </div>
       </div>
@@ -337,6 +362,17 @@ function MessagesTab({ onStatusChange }: { onStatusChange: () => void }) {
         "Sent" means the provider accepted the message. "Delivered" and "Read" come from the
         provider's receipts, which need the server's public address (PUBLIC_BASE_URL).
       </p>
+
+      {showCompose && (
+        <ComposeMessageModal
+          isOpen={showCompose}
+          onClose={() => setShowCompose(false)}
+          onSent={() => {
+            setMessages(getPatientMessages())
+            setNote("Custom message queued / dispatched.")
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -761,6 +797,268 @@ function SetupTab({ status, onSaved }: { status: MessagingStatus | null ;onSaved
           </>
         )}
       </section>
+
+      <TestMessageBlock />
+    </div>
+  )
+}
+
+function TestMessageBlock() {
+  const [testPhone, setTestPhone] = useState("")
+  const [testChannel, setTestChannel] = useState<"whatsapp" | "sms">("whatsapp")
+  const [status, setStatus] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const handleTest = async () => {
+    if (!testPhone.trim()) {
+      setStatus("Enter a test phone number with country code.")
+      return
+    }
+    setLoading(true)
+    setStatus("Sending test message...")
+    try {
+      const res = await sendPatientMessage({
+        patient: { id: "TEST", name: "Hospital Staff", phone: testPhone.trim() },
+        kind: "custom",
+        channels: [testChannel],
+        message: `Hello! This is a test message from HospAI Enterprise Hospital Management System at ${new Date().toLocaleTimeString()}.`,
+      })
+      if (res.sent > 0) {
+        setStatus(`✓ Test message accepted by ${testChannel.toUpperCase()} provider!`)
+      } else {
+        setStatus(`Message queued. Status: ${res.queued ? "Queued (provider gateway pending)" : "Failed"}. Check outbox.`)
+      }
+    } catch (err: any) {
+      setStatus(`Error: ${err?.message || "Failed to send test message."}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <section className="bg-white border border-[#DDE2EC] rounded-none p-4">
+      <h2 className="text-[14px] font-semibold text-gray-900 flex items-center gap-2">
+        <span>🧪</span> Send Test WhatsApp / SMS
+      </h2>
+      <p className="text-[12px] text-[#64748B] mt-1">
+        Verify your gateway connectivity by sending a real-time test message to your mobile device.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2 items-center">
+        <input
+          type="text"
+          value={testPhone}
+          onChange={(e) => setTestPhone(e.target.value)}
+          placeholder="Test phone (e.g. +91 98765 43210)"
+          className="h-9 px-3 text-[13px] border border-[#DDE2EC] rounded-none w-64 font-mono"
+        />
+        <select
+          value={testChannel}
+          onChange={(e) => setTestChannel(e.target.value as any)}
+          className="h-9 px-2 text-[13px] border border-[#DDE2EC] rounded-none bg-white"
+        >
+          <option value="whatsapp">WhatsApp</option>
+          <option value="sms">SMS</option>
+        </select>
+        <button
+          type="button"
+          onClick={handleTest}
+          disabled={loading}
+          className="h-9 px-4 text-[12.5px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-none shadow-xs disabled:opacity-50 cursor-pointer"
+        >
+          {loading ? "Sending..." : "Send Test"}
+        </button>
+      </div>
+      {status && (
+        <div className="mt-2 text-[12px] p-2 bg-[#F8FAFC] border border-[#DDE2EC] text-gray-800">
+          {status}
+        </div>
+      )}
+    </section>
+  )
+}
+
+interface ComposeMessageModalProps {
+  isOpen: boolean
+  onClose: () => void
+  onSent: () => void
+}
+
+function ComposeMessageModal({ isOpen, onClose, onSent }: ComposeMessageModalProps) {
+  const [patientName, setPatientName] = useState("")
+  const [phone, setPhone] = useState("")
+  const [channel, setChannel] = useState<"whatsapp" | "sms" | "both">("whatsapp")
+  const [message, setMessage] = useState("")
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState("")
+
+  if (!isOpen) return null
+
+  const handleSend = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError("")
+    const cleanPhone = phone.trim()
+    const cleanMsg = message.trim()
+    if (!cleanPhone) {
+      setError("Phone number is required.")
+      return
+    }
+    if (!cleanMsg) {
+      setError("Message text is required.")
+      return
+    }
+
+    setSending(true)
+    try {
+      const channels: MessageChannel[] = channel === "both" ? ["whatsapp", "sms"] : [channel]
+      await sendPatientMessage({
+        patient: {
+          id: "",
+          name: patientName.trim() || "Patient",
+          phone: cleanPhone,
+        },
+        kind: "custom",
+        channels,
+        message: cleanMsg,
+      })
+      onSent()
+      onClose()
+    } catch (err: any) {
+      setError(err?.message || "Failed to send message.")
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const handleDirectWhatsAppWeb = () => {
+    const cleanPhone = phone.trim()
+    const cleanMsg = message.trim()
+    if (!cleanPhone) {
+      setError("Enter a phone number to open in WhatsApp.")
+      return
+    }
+    const url = whatsAppHandoffUrl(cleanPhone, cleanMsg)
+    if (url) {
+      window.open(url, "_blank", "noopener")
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+      <div className="bg-white border border-[#CBD5E1] shadow-2xl rounded-none w-full max-w-lg overflow-hidden flex flex-col animate-in fade-in duration-200">
+        <div className="px-6 py-4 bg-[#0C1524] text-white flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-emerald-400">💬</span>
+            <h3 className="text-[14px] font-bold">New Patient Message (WhatsApp / SMS)</h3>
+          </div>
+          <button type="button" onClick={onClose} className="text-gray-400 hover:text-white text-sm cursor-pointer">✕</button>
+        </div>
+        <form onSubmit={handleSend} className="p-6 space-y-4 text-[13px]">
+          {error && (
+            <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-800 text-[12px]">
+              {error}
+            </div>
+          )}
+          <div>
+            <label className="block text-[12px] font-semibold text-gray-700 mb-1">
+              Patient Name (Optional)
+            </label>
+            <input
+              type="text"
+              value={patientName}
+              onChange={(e) => setPatientName(e.target.value)}
+              placeholder="e.g. Ramesh Patel"
+              className="w-full h-9 px-3 border border-[#CBD5E1] rounded-none text-gray-900"
+            />
+          </div>
+          <div>
+            <label className="block text-[12px] font-semibold text-gray-700 mb-1">
+              Phone Number <span className="text-rose-600">*</span>
+            </label>
+            <input
+              type="text"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="e.g. +91 98765 43210"
+              className="w-full h-9 px-3 border border-[#CBD5E1] rounded-none text-gray-900 font-mono"
+            />
+            <p className="text-[11px] text-[#64748B] mt-0.5">Include country code (e.g. +91 for India)</p>
+          </div>
+          <div>
+            <label className="block text-[12px] font-semibold text-gray-700 mb-1">
+              Delivery Channel
+            </label>
+            <div className="flex gap-4">
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="radio"
+                  name="channel"
+                  checked={channel === "whatsapp"}
+                  onChange={() => setChannel("whatsapp")}
+                />
+                <span>WhatsApp</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="radio"
+                  name="channel"
+                  checked={channel === "sms"}
+                  onChange={() => setChannel("sms")}
+                />
+                <span>SMS</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="radio"
+                  name="channel"
+                  checked={channel === "both"}
+                  onChange={() => setChannel("both")}
+                />
+                <span>Both</span>
+              </label>
+            </div>
+          </div>
+          <div>
+            <label className="block text-[12px] font-semibold text-gray-700 mb-1">
+              Message Content <span className="text-rose-600">*</span>
+            </label>
+            <textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              rows={4}
+              placeholder="Type your message to the patient here..."
+              className="w-full p-2.5 border border-[#CBD5E1] rounded-none text-gray-900 text-[12.5px]"
+            />
+            <div className="flex justify-between text-[11px] text-[#64748B]">
+              <span>Length: {message.length} characters</span>
+              {channel === "whatsapp" && (
+                <button
+                  type="button"
+                  onClick={handleDirectWhatsAppWeb}
+                  className="text-emerald-700 hover:underline font-semibold cursor-pointer"
+                >
+                  ⚡ Open in WhatsApp Web Directly
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="pt-2 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 border border-gray-300 text-gray-700 hover:bg-gray-50 text-[12.5px] cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={sending}
+              className="px-5 py-2 bg-[#1B4FD8] hover:bg-[#1740B4] text-white text-[12.5px] font-bold shadow-xs cursor-pointer disabled:opacity-50"
+            >
+              {sending ? "Sending..." : "Dispatch Message"}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   )
 }

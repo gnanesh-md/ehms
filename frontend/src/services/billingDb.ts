@@ -2290,7 +2290,7 @@ export class BillingDatabase {
           ? data.diagnosisCodes
           : ["Z00.00"],
 
-      attendingDoctor: data.attendingDoctor || "Dr. Staff Physician",
+      attendingDoctor: data.attendingDoctor || "",
 
       finalizedByNurse: data.finalizedByNurse,
 
@@ -2330,7 +2330,7 @@ export class BillingDatabase {
       body: JSON.stringify({
         patient_id: newClaim.patientId,
         module: newClaim.department || "OP",
-        doctor_name: (data as any).consultingDoctor || "Dr. Staff",
+        doctor_name: (data as any).consultingDoctor || (data as any).attendingDoctor || "",
         total_amount: newClaim.totalAmount,
         paid_amount: newClaim.amountPaid || 0,
         due_amount: newClaim.balanceDue || 0,
@@ -6856,7 +6856,7 @@ export class BillingDatabase {
 
       preAuthCode: data.preAuthCode,
 
-      attendingDoctor: data.attendingDoctor || "Dr. Staff Physician",
+      attendingDoctor: data.attendingDoctor || "",
 
       diagnosisCodes: data.diagnosisCodes || ["Z00.00"],
 
@@ -7594,7 +7594,7 @@ export class BillingDatabase {
             ? enc.registrationTime.split(" ")[0]
             : new Date().toISOString().split("T")[0],
 
-          doctor: enc.assignedDoctor || "Dr. Rajesh Sharma",
+          doctor: enc.assignedDoctor || "Attending Physician",
 
           status:
             enc.status === "OP Completed"
@@ -7694,7 +7694,7 @@ export class BillingDatabase {
             ? v.arrival_at.split("T")[0]
             : new Date().toISOString().split("T")[0],
 
-          doctor: v.assigned_doctor_name || "Dr. Vikram Seth",
+          doctor: v.assigned_doctor_name || "Emergency Physician",
 
           status: v.closed_at ? "Finalized by Dept" : "Accumulating Charges",
 

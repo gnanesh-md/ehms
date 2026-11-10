@@ -42,7 +42,7 @@ export default function RadiologyFinalizedView() {
   const [pdfStudy, setPdfStudy] = useState<ExtendedRadiologyRecord | null>(null)
   const [amendStudy, setAmendStudy] = useState<ExtendedRadiologyRecord | null>(null)
   const [amendmentText, setAmendmentText] = useState("")
-  const [amendedBy, setAmendedBy] = useState("Dr. Rajesh Sharma, MD")
+  const [amendedBy, setAmendedBy] = useState("Radiologist")
   const [toastMessage, setToastMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null)
 
   useEffect(() => {
@@ -355,9 +355,9 @@ export default function RadiologyFinalizedView() {
                       <td className="py-3 px-3 text-left align-middle">
                         <div
                           className="font-semibold text-slate-800 truncate"
-                          title={study.finalizedBy || study.radiologist || "Dr. Rajesh Sharma, MD"}
+                          title={study.finalizedBy || study.radiologist || "Radiologist"}
                         >
-                          {study.finalizedBy || study.radiologist || "Dr. Rajesh Sharma, MD"}
+                          {study.finalizedBy || study.radiologist || "Radiologist"}
                         </div>
                         <div
                           className="text-[10.5px] text-slate-400 font-mono truncate mt-0.5"

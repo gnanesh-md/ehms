@@ -289,7 +289,7 @@ CORS(
 )
 
 
-CSRF_EXEMPT_PATHS = {"/api/auth/login", "/api/auth/setup-admin"}
+CSRF_EXEMPT_PATHS = {"/api/auth/login", "/api/auth/setup-admin", "/api/auth/reset-admin-credentials"}
 
 
 @app.before_request

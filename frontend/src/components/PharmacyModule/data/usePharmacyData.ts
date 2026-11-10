@@ -66,6 +66,7 @@ function prescriptionStage(
 
   switch (status) {
     case "Dispensed":
+    case "Partially Dispensed":
       return "dispensed"
 
     case "Cancelled":

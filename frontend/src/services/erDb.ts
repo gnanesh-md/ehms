@@ -3120,7 +3120,7 @@ export class ErDatabase {
               ? "Cardiology"
               : "Emergency Medicine",
 
-          suggestedDoctor: "Dr. Vikram Seth (Cardiology / Critical Care)",
+          suggestedDoctor: "Duty Cardiologist / Emergency Specialist",
 
           triageBedLabel: "ER Bed 01 (Red Zone - Resuscitation)",
 
@@ -3224,7 +3224,7 @@ export class ErDatabase {
               ? "General Surgery / Gastroenterology"
               : "General Medicine",
 
-          suggestedDoctor: "Dr. Rajesh Sharma (General Medicine)",
+          suggestedDoctor: "Duty General Physician",
 
           triageBedLabel: "ER Bed 06 (Yellow Zone - Observation)",
 
@@ -3248,7 +3248,7 @@ export class ErDatabase {
 
         suggestedDepartment: "General Medicine",
 
-        suggestedDoctor: "Dr. Rajesh Sharma (General Medicine)",
+        suggestedDoctor: "Duty General Physician",
 
         triageBedLabel: "ER Bed 08 (Green Zone - Ambulatory)",
 
@@ -3354,22 +3354,17 @@ Respond ONLY with a valid JSON object matching this schema:
         // Deterministic fallback to a doctor in the department
 
         const docMap: Record<string, string> = {
-          Cardiology: "Dr. Vikram Seth (Cardiology)",
-
-          "Emergency Medicine": "Dr. Anita Roy (Emergency Medicine)",
-
-          "General Medicine": "Dr. Rajesh Sharma (General Medicine)",
-
-          "Orthopedics / Trauma": "Dr. Sanjay Gupta (Orthopedics / Trauma)",
-
-          Neurology: "Dr. Meenakshi Rao (Neurology)",
-
-          "General Surgery": "Dr. Priya Deshmukh (General Surgery)",
+          Cardiology: "Duty Cardiologist",
+          "Emergency Medicine": "Duty Emergency Physician",
+          "General Medicine": "Duty General Physician",
+          "Orthopedics / Trauma": "Duty Orthopedic Surgeon",
+          Neurology: "Duty Neurologist",
+          "General Surgery": "Duty General Surgeon",
         }
 
         parsed.suggestedDoctor =
           docMap[parsed.suggestedDepartment] ||
-          "Dr. Rajesh Sharma (General Medicine)"
+          "Duty Attending Physician"
       }
 
       return parsed

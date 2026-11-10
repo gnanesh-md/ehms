@@ -9,10 +9,12 @@ import { OpCardPreview, cardBarcodeValue, opCardDataFor, printOpCard } from "./o
 import { openJourneyForCode } from "./opcard/JourneyScan"
 import {
   notifyAppointmentBooked,
+  notifyPatientCalledToNurse,
   sendPatientMessage,
   whatsAppHandoffUrl,
   emailHandoffUrl,
 } from "../services/patientMessaging"
+import toast from "react-hot-toast"
 import { SendToPatientButton } from "./messaging/SendToPatientDialog"
 import HospitalReceiptModal from "./HospitalReceiptModal"
 import PatientJourneyModal from "./PatientJourneyModal"
@@ -264,7 +266,7 @@ export default function OPWorkflow({
       `👤 *Patient:* ${enc.patientName || patient.name}\n` +
       `🆔 *UMR:* ${targetUmr}\n` +
       `📋 *OP Encounter:* ${enc.opNumber || patient.opNumber}\n` +
-      `👨‍⚕️ *Consultant:* ${enc.assignedDoctor || patient.assignedDoctor || "OPD Consultant"}\n` +
+      `👨‍⚕️ *Consultant:* ${enc.assignedDoctor || patient.assignedDoctor || "Unassigned"}\n` +
       `🩺 *Specialty:* ${enc.dept || patient.aiSpecialty || "General Medicine"}\n` +
       `📅 *Date:* ${enc.date || patient.date || new Date().toLocaleDateString()}\n\n` +
       `*Clinical Pathway Completed:*\n` +
@@ -326,6 +328,21 @@ export default function OPWorkflow({
       window.open(emailHandoffUrl(email, subject, body), "_blank")
       setSmsSentNotice(`Email client opened for ${email}`)
     }
+  }
+
+  const handleCallPatientToNurse = () => {
+    const enc = dbEncounters.find((e) => e.id === patient.id || (e.umr && e.umr === patient.umr)) || (patient as any)
+    const targetId = enc?.id || patient.id
+    if (!targetId && !patient.umr) {
+      toast.error("Please register the patient first.")
+      return
+    }
+    if (targetId) {
+      db.callToNurseStation(targetId, "OP Reception")
+    }
+    notifyPatientCalledToNurse(enc || patient, "OP Nurse Station", "Room 102")
+    setDbEncounters(db.getEncounters())
+    toast.success(`Patient ${patient.name || "OP Patient"} called to Nurse Station!`)
   }
 
   const [aiAnalyzing, setAiAnalyzing] = useState(false)
@@ -1252,7 +1269,7 @@ export default function OPWorkflow({
                       `👤 *Patient:* ${patient.name}\n` +
                       `🆔 *Permanent UMR:* ${patient.umr}\n` +
                       `📋 *Active Visit:* ${patient.opNumber}\n` +
-                      `👨‍⚕️ *Consultant:* ${patient.assignedDoctor || "OPD Duty Doctor"}\n\n` +
+                      `👨‍⚕️ *Consultant:* ${patient.assignedDoctor || "Unassigned"}\n\n` +
                       `Present this card or UMR at the reception or nurse station during your visit.\n` +
                       `Helpline: ${branding.helpline || "+91-8816-279999"}`;
                     try {
@@ -1287,7 +1304,7 @@ export default function OPWorkflow({
                       `Here are your OP registration details at ${branding.hospitalName}:\n\n` +
                       `Permanent UMR: ${patient.umr}\n` +
                       `Visit OP Number: ${patient.opNumber}\n` +
-                      `Doctor: ${patient.assignedDoctor || "OPD Doctor"}\n` +
+                      `Doctor: ${patient.assignedDoctor || "Unassigned"}\n` +
                       `Date: ${patient.date || new Date().toLocaleDateString()}\n\n` +
                       `Keep your UMR safe for future visits.\n` +
                       `Warm regards,\n${branding.hospitalName}`;
@@ -1362,10 +1379,19 @@ export default function OPWorkflow({
               </div>
             )}
 
-            <div className="flex justify-end items-center pt-2">
+            <div className="flex justify-between items-center pt-2 gap-3 flex-wrap">
+              <button
+                type="button"
+                onClick={handleCallPatientToNurse}
+                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[12.5px] font-bold rounded transition-colors flex items-center gap-1.5 shadow-sm cursor-pointer"
+                title="Call patient to the nurse station for triage and baseline vitals recording"
+              >
+                <span>🩺</span>
+                <span>Call Patient to Nurse Station</span>
+              </button>
               <button
                 onClick={() => setCurrentStep(2)}
-                className="px-5 py-2.5 bg-[#1B4FD8] hover:bg-[#1740B4] text-white text-[12.5px] font-semibold rounded transition-colors flex items-center gap-1.5 shadow-sm cursor-pointer"
+                className="px-5 py-2.5 bg-[#1B4FD8] hover:bg-[#1740B4] text-white text-[12.5px] font-semibold rounded transition-colors flex items-center gap-1.5 shadow-sm cursor-pointer ml-auto"
               >
                 Proceed to Clinical Triage &amp; AI Analysis →
               </button>
@@ -1625,8 +1651,19 @@ export default function OPWorkflow({
                       </span>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-                      {aiAnalysisResult.doctors.map((doc, idx) => {
+                    {aiAnalysisResult.doctors.length === 0 ? (
+                      <div className="p-6 bg-amber-50 border-2 border-amber-200 rounded text-center space-y-2">
+                        <div className="text-3xl">👨‍⚕️</div>
+                        <div className="text-[13.5px] font-bold text-amber-900">
+                          No Doctor Staff Registered
+                        </div>
+                        <div className="text-[12px] text-amber-800 max-w-md mx-auto leading-relaxed">
+                          There are currently no verified doctors registered in the hospital system for this specialty. Please add doctors in <strong>Administration &rarr; Doctor Master</strong> to enable doctor allocation and queue booking.
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                        {aiAnalysisResult.doctors.map((doc, idx) => {
                         const isSelected =
                           selectedDoctorForBooking?.id === doc.id
                         const isPrimaryMatch = idx === 0
@@ -1759,8 +1796,9 @@ export default function OPWorkflow({
                             </div>
                           </div>
                         )
-                      })}
-                    </div>
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   {/* 3. Nurse Manual Booking Action Panel */}
@@ -1871,6 +1909,14 @@ export default function OPWorkflow({
 
                     {/* Direct Actions: doctor allocation, or jump to the portal */}
                     <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={handleCallPatientToNurse}
+                        className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[12.5px] font-bold rounded shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+                        title="Call patient to the nurse station for triage vitals"
+                      >
+                        <span>🩺</span> Call to Nurse Station
+                      </button>
                       {onOpenDoctorPortal && (
                         <button
                           onClick={() => onOpenDoctorPortal(patient.id)}

@@ -69,7 +69,7 @@ export default function UniversalRadiologyShell({
   onViewChange,
   hideSidebar = true,
   initialScope = "all",
-  technician = "Dr. Rajesh Sharma, MD",
+  technician = "Radiologist",
   role = "Senior Radiologist & HOD",
 }: UniversalRadiologyShellProps) {
   const [activeView, setActiveView] = useState<RadiologyViewMode>(initialView)

@@ -309,9 +309,11 @@ export default function Login({ onLogin }: LoginProps) {
   const [step, setStep] = useState<"role" | "credentials">("role")
   const [user, setUser] = useState("")
   const [pass, setPass] = useState("")
+  const [userReadOnly, setUserReadOnly] = useState(true)
+  const [passReadOnly, setPassReadOnly] = useState(true)
   const [showPass, setShowPass] = useState(false)
   const [capsLock, setCapsLock] = useState(false)
-  const [rememberDevice, setRememberDevice] = useState(true)
+  const [rememberDevice, setRememberDevice] = useState(false)
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
   const [roleQuery, setRoleQuery] = useState("")
@@ -320,6 +322,7 @@ export default function Login({ onLogin }: LoginProps) {
   const [rolesLoading, setRolesLoading] = useState(true)
   const [loginSummary, setLoginSummary] = useState<LoginSummary | null>(null)
   const userInputRef = useRef<HTMLInputElement>(null)
+  const passInputRef = useRef<HTMLInputElement>(null)
   const [stepDir, setStepDir] = useState<"forward" | "back">("forward")
   const [errorNonce, setErrorNonce] = useState(0)
 
@@ -390,8 +393,49 @@ export default function Login({ onLogin }: LoginProps) {
   }, [])
 
   useEffect(() => {
-    if (step === "credentials") userInputRef.current?.focus()
-  }, [step])
+    if (step === "credentials") {
+      setUser("")
+      setPass("")
+      setUserReadOnly(true)
+      setPassReadOnly(true)
+      userInputRef.current?.focus()
+    }
+  }, [step, selectedLoginRole])
+
+  // Aggressively prevent and purge browser autofilling of stale/dummy 'employee' credentials
+  useEffect(() => {
+    const inputEl = userInputRef.current
+    const passEl = passInputRef.current
+    if (!inputEl) return
+
+    const purgeDummy = () => {
+      const val = (inputEl.value || "").trim().toLowerCase()
+      if (val === "employee" || val.startsWith("employee")) {
+        inputEl.value = ""
+        setUser("")
+        if (passEl) {
+          passEl.value = ""
+          setPass("")
+        }
+      }
+    }
+
+    purgeDummy()
+    const interval = setInterval(purgeDummy, 100)
+    const timeout = setTimeout(() => clearInterval(interval), 3000)
+
+    inputEl.addEventListener("input", purgeDummy)
+    inputEl.addEventListener("change", purgeDummy)
+    inputEl.addEventListener("animationstart", purgeDummy)
+
+    return () => {
+      clearInterval(interval)
+      clearTimeout(timeout)
+      inputEl.removeEventListener("input", purgeDummy)
+      inputEl.removeEventListener("change", purgeDummy)
+      inputEl.removeEventListener("animationstart", purgeDummy)
+    }
+  }, [step, selectedLoginRole])
 
   const groupedRoles = useMemo(() => {
     const q = roleQuery.trim().toLowerCase()
@@ -412,6 +456,8 @@ export default function Login({ onLogin }: LoginProps) {
   const chooseRole = (roleId: string) => {
     setStepDir("forward")
     setSelectedLoginRole(roleId)
+    setUser("")
+    setPass("")
     setError("")
     setStep("credentials")
   }
@@ -419,6 +465,7 @@ export default function Login({ onLogin }: LoginProps) {
   const backToRoles = () => {
     setStepDir("back")
     setStep("role")
+    setUser("")
     setPass("")
     setShowPass(false)
     setError("")
@@ -787,7 +834,7 @@ export default function Login({ onLogin }: LoginProps) {
                     </div>
                   </>
                 ) : (
-                  <form onSubmit={submit} className="space-y-4" noValidate>
+                  <form onSubmit={submit} className="space-y-4" noValidate autoComplete="off">
                     <div>
                       <h2 className="text-xl font-semibold text-[#0F172A] mb-1">Sign in</h2>
                       <p className="text-[12.5px] text-[#64748B]">
@@ -815,23 +862,61 @@ export default function Login({ onLogin }: LoginProps) {
                       </button>
                     </div>
 
+                    {/* Dummy hidden inputs to intercept aggressive browser password autofill */}
+                    <input type="text" name="fake_user_prevent_autofill" style={{ position: "absolute", opacity: 0, height: 0, width: 0, pointerEvents: "none" }} tabIndex={-1} aria-hidden="true" autoComplete="off" />
+                    <input type="password" name="fake_pass_prevent_autofill" style={{ position: "absolute", opacity: 0, height: 0, width: 0, pointerEvents: "none" }} tabIndex={-1} aria-hidden="true" autoComplete="off" />
+
                     <div>
-                      <label htmlFor="login-user" className="block text-[12px] font-semibold text-[#374151] mb-1.5">
-                        User ID / Employee Number
-                      </label>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label htmlFor="login-user" className="block text-[12px] font-semibold text-[#374151]">
+                          {selectedLoginRole.includes("ADMIN") ? "Administrator User ID / Username" : "User ID / Staff Number"}
+                        </label>
+                        {user && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUser("")
+                              userInputRef.current?.focus()
+                            }}
+                            className="text-[11px] text-[#94A3B8] hover:text-[#E11D48] transition-colors"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
                       <div className="group relative">
                         <User className="w-4 h-4 text-[#94A3B8] group-focus-within:text-[#1B4FD8] transition-colors absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                         <input
                           id="login-user"
+                          name="hospai_login_user"
                           ref={userInputRef}
                           value={user}
+                          readOnly={userReadOnly}
+                          onFocus={() => setUserReadOnly(false)}
+                          onMouseEnter={() => setUserReadOnly(false)}
+                          onTouchStart={() => setUserReadOnly(false)}
                           onChange={(e) => setUser(e.target.value)}
-                          placeholder="e.g. dr.varma or STF-001"
-                          autoComplete="username"
+                          placeholder={selectedLoginRole.includes("ADMIN") ? "e.g. admin" : "e.g. STF-1001 or username"}
+                          autoComplete="off"
+                          data-lpignore="true"
+                          data-1p-ignore="true"
                           autoCapitalize="none"
                           spellCheck={false}
-                          className={inputCls}
+                          className={`${inputCls} pr-8`}
                         />
+                        {user && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUser("")
+                              userInputRef.current?.focus()
+                            }}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs p-1"
+                            title="Clear"
+                          >
+                            ✕
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -852,14 +937,22 @@ export default function Login({ onLogin }: LoginProps) {
                         <Lock className="w-4 h-4 text-[#94A3B8] group-focus-within:text-[#1B4FD8] transition-colors absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                         <input
                           id="login-pass"
+                          name="hospai_login_pass"
+                          ref={passInputRef}
                           type={showPass ? "text" : "password"}
                           value={pass}
+                          readOnly={passReadOnly}
+                          onFocus={() => setPassReadOnly(false)}
+                          onMouseEnter={() => setPassReadOnly(false)}
+                          onTouchStart={() => setPassReadOnly(false)}
                           onChange={(e) => setPass(e.target.value)}
                           onKeyUp={(e) => setCapsLock(e.getModifierState("CapsLock"))}
                           onKeyDown={(e) => setCapsLock(e.getModifierState("CapsLock"))}
                           onBlur={() => setCapsLock(false)}
                           placeholder="Enter your password"
-                          autoComplete="current-password"
+                          autoComplete="new-password"
+                          data-lpignore="true"
+                          data-1p-ignore="true"
                           className={`${inputCls} pr-10`}
                         />
                         <button

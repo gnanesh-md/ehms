@@ -158,6 +158,11 @@ export function getFloorAlerts(): PatientNotification[] {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
 
+/** Clears all patient messages and floor alerts from outbox storage. */
+export function clearPatientMessages(): void {
+  write([])
+}
+
 export function markFloorAlertsRead(ids: string[]) {
   if (!ids.length) return
   const set = new Set(ids)

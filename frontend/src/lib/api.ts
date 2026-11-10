@@ -1219,7 +1219,7 @@ async function handleLocalErMock<T = any>(
 
             appointment_dept: bed.ward,
 
-            appointment_doctor: "Dr. Rajesh Sharma",
+            appointment_doctor: bed.doctor || "Unassigned",
           })
         }
       }
@@ -1258,7 +1258,7 @@ async function handleLocalErMock<T = any>(
 
           er_triage_category: visit.triage?.category || "Yellow",
 
-          appointment_doctor: visit.assigned_doctor_name || "Dr. Anita Roy",
+          appointment_doctor: visit.assigned_doctor_name || "Unassigned",
 
           appointment_dept: "Emergency Medicine",
         })
@@ -1294,7 +1294,7 @@ async function handleLocalErMock<T = any>(
 
           appointment_status: latestEnc?.status || "Registered",
 
-          appointment_doctor: latestEnc?.assignedDoctor || "Dr. Rajesh Sharma",
+          appointment_doctor: latestEnc?.assignedDoctor || "Unassigned",
 
           appointment_dept: latestEnc?.dept || "General Medicine",
         })
@@ -1324,7 +1324,7 @@ async function handleLocalErMock<T = any>(
 
           appointment_dept: "Emergency",
 
-          appointment_doctor: "Dr. Anita Roy",
+          appointment_doctor: (ep as any).assigned_doctor_name || "Unassigned",
         })
       }
     }
@@ -1537,7 +1537,7 @@ async function handleLocalErMock<T = any>(
 
       status: "Completed",
 
-      doctor_name: opEnc[0]?.assignedDoctor || "Dr. Rajesh Sharma",
+      doctor_name: opEnc[0]?.assignedDoctor || "",
 
       created_at: new Date().toISOString(),
     }))
@@ -1618,7 +1618,7 @@ async function handleLocalErMock<T = any>(
 
         body: `This is to certify that ${name} (Age: ${age}, ${gender}) has been examined and is clinically fit for regular duties.`,
 
-        issued_by: opEnc[0]?.assignedDoctor || "Dr. Rajesh Sharma",
+        issued_by: opEnc[0]?.assignedDoctor || "",
 
         created_at: new Date().toISOString(),
       },

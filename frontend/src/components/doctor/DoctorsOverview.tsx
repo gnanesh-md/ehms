@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react"
+import React, { useEffect, useMemo, useState } from "react"
 import {
   Activity,
   AlertTriangle,
@@ -28,6 +28,7 @@ import {
   getAllDoctorAccounts,
   type DoctorAccount,
 } from "../../services/doctorPortalDb"
+import { syncDoctorMasterFromBackend } from "../../services/doctorMaster"
 import { STAGE_HUES, TONE, band, gradient, specialtyHue, type Hue } from "./doctorTheme"
 
 // ── Small pieces ─────────────────────────────────────────────────────────────
@@ -137,6 +138,10 @@ export default function DoctorsOverview({
   onOpenAdminMaster?: () => void
 } = {}) {
   const { revision, now } = useLiveClinic()
+
+  useEffect(() => {
+    syncDoctorMasterFromBackend().catch(() => {})
+  }, [])
   const data = useMemo(() => getDoctorOversight(), [revision])
   const [query, setQuery] = useState("")
   const [specialty, setSpecialty] = useState("All")
@@ -280,7 +285,17 @@ export default function DoctorsOverview({
                 </span>
               </button>
               {list.length === 0 ? (
-                <Empty icon={Stethoscope} title="No doctors match" text={show === "busy" ? "Switch to All to see doctors with no activity yet." : "Try another name or specialty."} />
+                <Empty
+                  icon={Stethoscope}
+                  title={data.doctors.length === 0 ? "No doctors registered" : "No doctors match"}
+                  text={
+                    data.doctors.length === 0
+                      ? "No doctors are currently registered in the hospital. Add doctors in Doctor Master or Staff directory."
+                      : show === "busy"
+                      ? "Switch to All to see doctors with no activity yet."
+                      : "Try another name or specialty."
+                  }
+                />
               ) : (
                 list.map((d) => {
                   const active = effective?.key === d.key && !showUnclaimed
@@ -371,7 +386,15 @@ export default function DoctorsOverview({
               />
             ) : (
               <div className="flex-1 bg-white border border-[#DDE2EC] rounded-[12px]">
-                <Empty icon={Stethoscope} title="No doctor activity yet" text="Patients appear here as soon as reception assigns them to a doctor." />
+                <Empty
+                  icon={Stethoscope}
+                  title={data.doctors.length === 0 ? "No doctors registered" : "No doctor selected"}
+                  text={
+                    data.doctors.length === 0
+                      ? "No doctors are currently registered. Add doctors via Doctor Master or Staff directory to monitor clinical queues."
+                      : "Select a doctor from the list to view their patient queue and consultations."
+                  }
+                />
               </div>
             )}
           </section>

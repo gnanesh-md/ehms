@@ -29,6 +29,7 @@ import {
   DiagnosticDepartment,
   RADIOLOGY_MODALITIES,
 } from "../services/diagnosticTariffDb"
+import { AdminCredentialsModal } from "./AdminCredentialsModal"
 
 // Canonical module keys accepted by the backend RBAC layer.
 const MODULE_CATEGORIES = [
@@ -325,6 +326,7 @@ export default function Administration({
   const [doctorNotice, setDoctorNotice] = useState("")
 
   // Credentials Editing Modal State
+  const [showAdminModal, setShowAdminModal] = useState(false)
   const [showCredentialsModal, setShowCredentialsModal] = useState(false)
   const [credentialsForm, setCredentialsForm] = useState<{
     id: string
@@ -1730,9 +1732,7 @@ export default function Administration({
       variantProtocol: newTariffForm.variantProtocol.trim() || "Plain",
       hospitalAvailability: newTariffForm.hospitalAvailability || "Enabled",
       tariffReference: newTariffForm.tariffReference.trim() || "Existing Billing tariff",
-      responsibleInCharge:
-        newTariffForm.responsibleInCharge.trim() ||
-        (isLab ? "Dr. Priya Patel (Pathologist)" : "Dr. Sunita Rao (Senior Radiologist)"),
+      responsibleInCharge: newTariffForm.responsibleInCharge.trim() || "",
       reportTemplate:
         newTariffForm.reportTemplate.trim() ||
         `Approved ${newTariffForm.name.trim()} Template`,
@@ -2288,7 +2288,7 @@ export default function Administration({
                             {/* Responsible In-Charge */}
                             <td className="py-2.5 px-3">
                               <div className="text-[12px] font-semibold text-[#1E293B]">
-                                {item.responsibleInCharge || (dept === "Laboratory" ? "Dr. Priya Patel (Pathology)" : "Dr. Sunita Rao (Senior Radiologist)")}
+                                {item.responsibleInCharge || "-"}
                               </div>
                             </td>
 
@@ -2874,6 +2874,14 @@ export default function Administration({
 
               <div className="flex items-center gap-2">
                 <button
+                  type="button"
+                  onClick={() => setShowAdminModal(true)}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-[13px] font-semibold px-3.5 py-2 border border-emerald-700 transition-colors shadow-2xs cursor-pointer flex items-center gap-1.5"
+                >
+                  <span>🔑</span>
+                  <span>Edit Admin Credentials</span>
+                </button>
+                <button
                   onClick={() => openNewUser()}
                   className="bg-[#1B4FD8] hover:bg-[#1740B4] text-white text-[13px] font-semibold px-4 py-2 border border-blue-600 transition-colors shadow-2xs cursor-pointer flex items-center gap-1.5"
                 >
@@ -2881,6 +2889,34 @@ export default function Administration({
                   <span>Add Staff Account</span>
                 </button>
               </div>
+            </div>
+
+            {/* System Admin Account Banner */}
+            <div className="bg-gradient-to-r from-blue-50/70 via-indigo-50/60 to-purple-50/70 border border-blue-200/80 p-3.5 flex flex-wrap items-center justify-between gap-3 text-[12.5px]">
+              <div className="flex items-center gap-3">
+                <span className="w-9 h-9 rounded-full bg-[#1B4FD8] text-white flex items-center justify-center font-bold text-sm shrink-0 shadow-sm">
+                  🛡️
+                </span>
+                <div>
+                  <div className="font-bold text-[#0F172A] flex items-center gap-2">
+                    <span>System Administrator Master Account</span>
+                    <span className="text-[10.5px] bg-blue-100 text-[#1B4FD8] font-bold px-2 py-0.5 rounded-full">
+                      Root Governance
+                    </span>
+                  </div>
+                  <div className="text-[11.5px] text-[#64748B]">
+                    Full hospital governance account with unrestricted access across all clinical and operational modules.
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAdminModal(true)}
+                className="bg-white hover:bg-blue-50 text-[#1B4FD8] border border-blue-300 font-bold px-3 py-1.5 text-[12px] shadow-2xs transition-colors cursor-pointer flex items-center gap-1.5"
+              >
+                <span>✏️</span>
+                <span>Edit Credentials</span>
+              </button>
             </div>
 
             {/* Users Table */}
@@ -4337,6 +4373,20 @@ export default function Administration({
         </div>
       )}
 
+      {/* System Admin Credentials Modal */}
+      {showAdminModal && (
+        <AdminCredentialsModal
+          isOpen={showAdminModal}
+          onClose={() => setShowAdminModal(false)}
+          onSaved={(updated) => {
+            setUsers(RoleDatabase.getUsers())
+            toast.success(`Admin credentials updated successfully (@${updated.username}).`)
+            setUserNotice(`Admin credentials updated successfully (@${updated.username}).`)
+            setTimeout(() => setUserNotice(""), 5000)
+          }}
+        />
+      )}
+
       {/* 2. Edit Credentials Modal */}
       {showCredentialsModal && credentialsForm && (
         <div className="fixed inset-0 bg-gray-900/50 z-50 flex items-center justify-center p-4">
@@ -4734,8 +4784,12 @@ export default function Administration({
                     onChange={(e) =>
                       setEditingUser({ ...editingUser, roleId: e.target.value })
                     }
-                    className="w-full bg-white border border-[#DDE2EC] px-3.5 py-2 text-[13px] text-[#0F172A] focus:outline-none focus:border-[#1B4FD8] font-semibold cursor-pointer"
+                    disabled={editingUser.roleId === "ROLE_ADMIN" || editingUser.username === "admin"}
+                    className="w-full bg-white border border-[#DDE2EC] px-3.5 py-2 text-[13px] text-[#0F172A] focus:outline-none focus:border-[#1B4FD8] font-semibold cursor-pointer disabled:bg-gray-100 disabled:text-gray-600"
                   >
+                    {(editingUser.roleId === "ROLE_ADMIN" || editingUser.username === "admin") && (
+                      <option value="ROLE_ADMIN">System Administrator (Root Governance)</option>
+                    )}
                     {assignableRoles.map((r) => (
                       <option key={r.id} value={r.id}>
                         {r.name}
@@ -5301,32 +5355,26 @@ export default function Administration({
                     onChange={(e) => {
                       const dept = e.target.value as DiagnosticDepartment
                       let defRegion = "General"
-                      let defInCharge = "Dr. Sunita Rao (Senior Radiologist)"
+                      let defInCharge = ""
                       let defVariant = "Standard"
 
                       if (dept === "Laboratory") {
                         defRegion = "Haematology"
-                        defInCharge = "Dr. Priya Patel (Pathology)"
                         defVariant = "Standard Lab Profile"
                       } else if (dept === "X-Ray") {
                         defRegion = "Chest"
-                        defInCharge = "Dr. Sunita Rao (Senior Radiologist)"
                         defVariant = "PA View"
                       } else if (dept === "CT Scan") {
                         defRegion = "Brain"
-                        defInCharge = "Dr. Sunita Rao (Senior Radiologist)"
                         defVariant = "Plain"
                       } else if (dept === "MRI") {
                         defRegion = "Brain"
-                        defInCharge = "Dr. Sunita Rao (Senior Radiologist)"
                         defVariant = "Plain Multiplanar"
                       } else if (dept === "Ultrasound (USG)" || dept === "Doppler") {
                         defRegion = dept === "Doppler" ? "Cardiovascular" : "Abdomen & Pelvis"
-                        defInCharge = "Dr. Amit Roy (USG In-Charge)"
                         defVariant = dept === "Doppler" ? "Color Duplex" : "Transabdominal"
                       } else {
                         defRegion = dept === "Dental" ? "Dental / Maxillofacial" : dept === "Mammography" ? "Breast" : "Special Procedures"
-                        defInCharge = "Dr. Rajesh Sharma (HOD Radiology)"
                         defVariant = "Diagnostic Protocol"
                       }
 

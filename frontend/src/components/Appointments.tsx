@@ -1189,11 +1189,10 @@ export default function Appointments({
                           <div className="text-[12px] text-[#64748B] flex items-center gap-2 flex-wrap">
                             {/* Height-matched unified Specialty and Room badge */}
                             <span className="bg-[#0F172A] text-white px-2 py-0.5 rounded-none text-[10.5px] font-bold uppercase tracking-wide h-5 flex items-center leading-none">
-                              {(enc.dept || "CARDIOLOGY").toUpperCase()} |{" "}
-                              {enc.room || "ROOM 107"}
+                              {(enc.dept || "General Medicine").toUpperCase()}{enc.room ? ` | ${enc.room}` : ""}
                             </span>
                             <span className="font-semibold text-gray-900">
-                              {enc.assignedDoctor || "Dr. Arjun Mehta"}
+                              {enc.assignedDoctor || "Doctor Unassigned"}
                             </span>
                             <span>·</span>
                             <span>

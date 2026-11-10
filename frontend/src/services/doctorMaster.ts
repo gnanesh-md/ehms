@@ -207,7 +207,7 @@ export function deleteDoctorMaster(id: string): MasterDoctor[] {
 export async function syncDoctorMasterFromBackend(): Promise<MasterDoctor[]> {
   try {
     const res = await apiFetch<{ success: boolean; doctors: any[] }>("/api/admin/doctors")
-    if (res?.doctors && Array.isArray(res.doctors) && res.doctors.length > 0) {
+    if (res && Array.isArray(res.doctors)) {
       const mapped: MasterDoctor[] = res.doctors.map((d) => ({
         id: String(d.staff_id || d.id),
         name: d.doctor_name || d.name,
@@ -231,16 +231,36 @@ export async function syncDoctorMasterFromBackend(): Promise<MasterDoctor[]> {
   return getDoctorMaster()
 }
 
-/** Static fallback export for components reading DOCTOR_MASTER at top-level */
-export const DOCTOR_MASTER: MasterDoctor[] = getDoctorMaster()
+export const getActiveDoctors = (): MasterDoctor[] => {
+  return getDoctorMaster().filter((d) => d && d.verified && d.specialty)
+}
 
-/** Doctors who may be shown a login, triaged to, and booked. */
-export const ACTIVE_DOCTORS = DOCTOR_MASTER.filter(
-  (d) => d.verified && d.specialty,
-)
+/** Dynamic live proxy for DOCTOR_MASTER always querying current state */
+export const DOCTOR_MASTER: MasterDoctor[] = new Proxy([] as MasterDoctor[], {
+  get(target, prop, receiver) {
+    const live = getDoctorMaster()
+    const val = Reflect.get(live, prop, receiver)
+    return typeof val === "function" ? val.bind(live) : val
+  },
+})
+
+/** Dynamic live proxy for ACTIVE_DOCTORS */
+export const ACTIVE_DOCTORS: MasterDoctor[] = new Proxy([] as MasterDoctor[], {
+  get(target, prop, receiver) {
+    const live = getActiveDoctors()
+    const val = Reflect.get(live, prop, receiver)
+    return typeof val === "function" ? val.bind(live) : val
+  },
+})
 
 /** Rows the hospital still has to complete before they can be used. */
-export const UNVERIFIED_DOCTORS = DOCTOR_MASTER.filter((d) => !d.verified)
+export const UNVERIFIED_DOCTORS: MasterDoctor[] = new Proxy([] as MasterDoctor[], {
+  get(target, prop, receiver) {
+    const live = getDoctorMaster().filter((d) => !d.verified)
+    const val = Reflect.get(live, prop, receiver)
+    return typeof val === "function" ? val.bind(live) : val
+  },
+})
 
 export const DEFAULT_HOSPITAL_SPECIALTIES = [
   "General Medicine",
@@ -272,13 +292,14 @@ export function getActiveSpecialties(): string[] {
   return Array.from(specs).sort()
 }
 
-/** Every specialty that has at least one usable doctor behind it. */
-export const ACTIVE_SPECIALTIES = Array.from(
-  new Set([
-    ...DEFAULT_HOSPITAL_SPECIALTIES,
-    ...ACTIVE_DOCTORS.map((d) => d.specialty as string).filter(Boolean),
-  ]),
-).sort()
+/** Dynamic live proxy for ACTIVE_SPECIALTIES */
+export const ACTIVE_SPECIALTIES: string[] = new Proxy([] as string[], {
+  get(target, prop, receiver) {
+    const live = getActiveSpecialties()
+    const val = Reflect.get(live, prop, receiver)
+    return typeof val === "function" ? val.bind(live) : val
+  },
+})
 
 export function getDoctorByName(name: string): MasterDoctor | undefined {
   if (!name) return undefined

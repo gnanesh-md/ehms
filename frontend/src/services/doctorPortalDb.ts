@@ -77,10 +77,10 @@ export function getAllDoctorAccounts(): DoctorAccount[] {
   try {
     master = getDoctorMaster()
   } catch {
-    master = INITIAL_DOCTOR_MASTER
+    master = []
   }
-  if (!master || master.length === 0) {
-    master = INITIAL_DOCTOR_MASTER
+  if (!master || !Array.isArray(master)) {
+    master = []
   }
 
   const seenIds = new Set<string>()
@@ -118,25 +118,7 @@ export function getAllDoctorAccounts(): DoctorAccount[] {
         roleUpper.includes("DOCTOR") ||
         roleUpper.includes("SURGEON") ||
         roleUpper.includes("PHYSICIAN") ||
-        roleUpper.includes("CLINICIAN") ||
-        (u.name || "").toLowerCase().startsWith("dr.") ||
-        (u.department &&
-          [
-            "cardiology",
-            "neurology",
-            "pediatrics",
-            "orthopedics",
-            "general surgery",
-            "general medicine",
-            "oncology",
-            "gastroenterology",
-            "ent",
-            "ophthalmology",
-            "dermatology",
-            "urology",
-            "pulmonology",
-            "emergency medicine",
-          ].includes(u.department.toLowerCase()))
+        roleUpper.includes("CLINICIAN")
 
       if (!isDoc) continue
 
@@ -144,16 +126,6 @@ export function getAllDoctorAccounts(): DoctorAccount[] {
       const userKey = String(u.username || "").trim().toLowerCase()
 
       if (seenIds.has(idKey) || (userKey && seenIds.has(userKey))) {
-        // Upgrade specialty if existing had default "General Medicine" but user has specific department
-        const existing = accounts.find(
-          (a) =>
-            a.id.toLowerCase() === idKey ||
-            a.username.toLowerCase() === userKey ||
-            a.staffId.toLowerCase() === idKey,
-        )
-        if (existing && u.department && (existing.specialty === "General Medicine" || !existing.specialty)) {
-          existing.specialty = u.department
-        }
         continue
       }
 
@@ -173,42 +145,17 @@ export function getAllDoctorAccounts(): DoctorAccount[] {
     }
   } catch {}
 
-  // 3. Include any ACTIVE_DOCTORS that weren't captured
-  for (const d of ACTIVE_DOCTORS) {
-    const idKey = String(d.id).trim().toLowerCase()
-    if (!seenIds.has(idKey)) {
-      seenIds.add(idKey)
-      const docName = (d.name || "").trim()
-      accounts.push({
-        id: d.id,
-        username: (d.username || d.id.toLowerCase().replace(/[^a-z0-9]/g, "")).toLowerCase(),
-        name: docName.startsWith("Dr.") ? docName : `Dr. ${docName}`,
-        specialty: d.specialty || "General Medicine",
-        room: d.room || "Room 101",
-        staffId: d.staffId || d.id,
-        qualification: d.qualification || "Consultant Physician",
-      })
-    }
-  }
-
-  // 4. Default fallback doctor if empty
-  if (accounts.length === 0) {
-    accounts.push({
-      id: "DOC-001",
-      username: "doctor",
-      name: "Dr. Vikram Seth",
-      specialty: "General Medicine",
-      room: "Room 101",
-      staffId: "DOC-001",
-      qualification: "Consultant Physician",
-    })
-  }
-
   return accounts
 }
 
-/** Static roster initialized with all doctors in the master. */
-export const DOCTOR_ROSTER: DoctorAccount[] = getAllDoctorAccounts()
+/** Dynamic live proxy initialized with all doctors in the master. */
+export const DOCTOR_ROSTER: DoctorAccount[] = new Proxy([] as DoctorAccount[], {
+  get(target, prop, receiver) {
+    const live = getAllDoctorAccounts()
+    const val = Reflect.get(live, prop, receiver)
+    return typeof val === "function" ? val.bind(live) : val
+  },
+})
 
 /**
  * Resiliently checks whether an encounter belongs to a specific doctor.
@@ -251,10 +198,10 @@ export function doesDoctorMatchEncounter(
   return false
 }
 
-export function getDoctorById(doctorId?: string | null): DoctorAccount {
+export function getDoctorById(doctorId?: string | null): DoctorAccount | undefined {
   const dynamicAccounts = getAllDoctorAccounts()
   if (!doctorId || !doctorId.trim()) {
-    return dynamicAccounts[0] || DOCTOR_ROSTER[0]
+    return dynamicAccounts[0] || undefined
   }
 
   const tid = doctorId.trim()
@@ -321,7 +268,7 @@ export function getDoctorById(doctorId?: string | null): DoctorAccount {
     }
   }
 
-  return dynamicAccounts[0] || DOCTOR_ROSTER[0]
+  return dynamicAccounts[0] || undefined
 }
 
 export function getDoctorByName(
@@ -385,14 +332,18 @@ export function resolveDoctorAccount(hint?: {
   department?: string | null
   qualification?: string | null
   room?: string | null
-}): DoctorAccount {
+}): DoctorAccount | null {
   const allAccounts = getAllDoctorAccounts()
-  if (!hint) return allAccounts[0] || DOCTOR_ROSTER[0]
+  if (!hint) return allAccounts[0] || null
 
   const cleanDocId = (hint.doctorId || "").trim()
   const cleanUsername = (hint.username || "").trim().toLowerCase()
   const cleanName = (hint.name || "").trim()
   const hintSpecialty = (hint.specialty || hint.department || "").trim()
+
+  if (cleanUsername === "admin" || cleanUsername === "administrator") {
+    return null
+  }
 
   // 1. Try matching by doctorId / staffId
   if (cleanDocId) {
@@ -455,22 +406,34 @@ export function resolveDoctorAccount(hint?: {
       )
     })
     if (matchedUser) {
+      const roleUpper = (matchedUser.roleId || "").toUpperCase()
       const docName = (matchedUser.name || "").trim()
-      return {
-        id: matchedUser.staffId || matchedUser.id,
-        username: matchedUser.username.toLowerCase(),
-        name: docName.startsWith("Dr.") ? docName : `Dr. ${docName}`,
-        specialty: hintSpecialty || matchedUser.department || "General Medicine",
-        room: hint.room || "Room 101",
-        staffId: matchedUser.staffId || matchedUser.id,
-        qualification: hint.qualification || "Consultant Physician",
+      const isDoc =
+        roleUpper.includes("DOCTOR") ||
+        roleUpper.includes("PHYSICIAN") ||
+        roleUpper.includes("SURGEON") ||
+        docName.toLowerCase().startsWith("dr.")
+      if (isDoc) {
+        return {
+          id: matchedUser.staffId || matchedUser.id,
+          username: matchedUser.username.toLowerCase(),
+          name: docName.startsWith("Dr.") ? docName : `Dr. ${docName}`,
+          specialty: hintSpecialty || matchedUser.department || "General Medicine",
+          room: hint.room || "Room 101",
+          staffId: matchedUser.staffId || matchedUser.id,
+          qualification: hint.qualification || "Consultant Physician",
+        }
       }
     }
   } catch {}
 
-  // 5. If specific doctor details were provided in hint, synthesize this doctor's individual account
-  // rather than defaulting to Dr. Varma
-  if (cleanDocId || cleanUsername || cleanName) {
+  // 5. If specific doctor details were provided in hint (must have doctor indicator)
+  const isDocHint =
+    Boolean(cleanDocId && (cleanDocId.toUpperCase().startsWith("DOC-") || cleanDocId.toUpperCase().startsWith("DR"))) ||
+    /^dr\.?\s*/i.test(cleanName) ||
+    cleanUsername.startsWith("doctor")
+
+  if (isDocHint && (cleanDocId || cleanUsername || cleanName)) {
     const id = cleanDocId || cleanUsername || "DOC-001"
     const rawName = cleanName || cleanUsername || id
     const displayName = /^dr\.?\s*/i.test(rawName) ? rawName : `Dr. ${rawName}`
@@ -485,7 +448,7 @@ export function resolveDoctorAccount(hint?: {
     }
   }
 
-  return allAccounts[0] || DOCTOR_ROSTER[0]
+  return allAccounts[0] || null
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────

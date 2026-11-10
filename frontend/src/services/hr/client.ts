@@ -2,7 +2,6 @@
 // Includes high-performance in-memory caching and request de-duplication for sub-10ms UI responsiveness.
 import { API_BASE } from "../../lib/constants"
 import { getCsrfToken } from "../../lib/api"
-import { handleHrMockDispatch } from "./mockData"
 
 export class HrApiError extends Error {
   status: number
@@ -136,9 +135,6 @@ async function request<T>(method: string, path: string, body?: unknown, query?: 
     try {
       res = await fetch(reqUrl, { method, headers, body: payload, credentials: "include" })
     } catch {
-      // Backend is offline -> Seamlessly fall back to rich enterprise mock data
-      const fallback = handleHrMockDispatch(method, path, body, query)
-      if (fallback !== undefined) return sanitizeHrResponse(path, fallback) as T
       throw new HrApiError(0, "HR service is unreachable. Check the backend is running.", "network")
     }
     if (res.status === 204) return undefined as T
@@ -150,10 +146,6 @@ async function request<T>(method: string, path: string, body?: unknown, query?: 
       // Non-JSON (e.g. a gateway 502 page): fall through to the status message.
     }
     if (!res.ok) {
-      // Fallback to enterprise mock data if gateway/backend responds with error
-      const fallback = handleHrMockDispatch(method, path, body, query)
-      if (fallback !== undefined) return sanitizeHrResponse(path, fallback) as T
-
       const message =
         data?.error ||
         (res.status === 401

@@ -58,6 +58,17 @@ def normalize_hospital_code(code):
 def _normalize_database_url(url: str) -> str:
     if url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://") :]
+    if "://" in url:
+        scheme, rest = url.split("://", 1)
+        if "@" in rest:
+            at_idx = rest.rfind("@")
+            userinfo = rest[:at_idx]
+            host_and_path = rest[at_idx + 1 :]
+            if ":" in userinfo:
+                from urllib.parse import quote, unquote
+                username, password = userinfo.split(":", 1)
+                userinfo = f"{username}:{quote(unquote(password))}"
+            url = f"{scheme}://{userinfo}@{host_and_path}"
     if "connect_timeout" not in url:
         sep = "&" if "?" in url else "?"
         url += f"{sep}connect_timeout=5"
@@ -6831,11 +6842,11 @@ def ensure_op_tables(conn):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_op_timeline_appt ON op_timeline(appointment_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_op_timeline_patient ON op_timeline(patient_id)")
 
-    # Seed default gender-balanced doctors if table is empty
+    # Seed default gender-balanced doctors only if explicitly requested
     cursor.execute("SELECT COUNT(*) FROM doctors")
     count_row = cursor.fetchone()
     doc_count = count_row[0] if count_row else 0
-    if doc_count == 0:
+    if doc_count == 0 and os.getenv("SEED_DEMO_DOCTORS", "").lower() in ("1", "true"):
         default_docs = [
             ("Dr. Emily Chen", "Cardiology", "Female", 500.0, 250.0, "available"),
             ("Dr. Robert Davis", "Cardiology", "Male", 500.0, 250.0, "available"),
@@ -12241,7 +12252,7 @@ def list_admin_doctors(hospital_id=None, department=None, search=None, status=No
         where_clause = " AND ".join(conditions)
         sql = _to_sql_params(f"""
             SELECT 
-                d.id, d.hospital_id, d.doctor_name, d.name, d.department,
+                d.id, d.hospital_id, d.doctor_name, d.doctor_name AS name, d.department,
                 d.qualification, d.specialty, d.specialty_note, d.section,
                 d.staff_id, d.username, d.room, d.gender, d.council_reg_no,
                 d.experience_years, d.consultation_fee, d.review_fee,
@@ -12578,6 +12589,14 @@ def update_admin_user(user_id, data, hospital_id=None):
         if "status" in data:
             updates.append("status = ?")
             params.append(str(data["status"]).lower())
+        if "username" in data and str(data["username"]).strip():
+            updates.append("username = ?")
+            params.append(str(data["username"]).strip().lower())
+        if "password" in data and str(data["password"]).strip() and str(data["password"]).strip() != "password123":
+            from core.auth import hash_password
+            updates.append("password_hash = ?")
+            updates.append("password_changed_at = CURRENT_TIMESTAMP")
+            params.append(hash_password(str(data["password"]).strip()))
 
         if not updates:
             return False
@@ -12591,8 +12610,13 @@ def update_admin_user(user_id, data, hospital_id=None):
             params.extend([numeric_id, scoped_id])
             sql = _to_sql_params(f"UPDATE users SET {', '.join(updates)} WHERE id = ? AND hospital_id = ?")
         else:
-            params.extend([str(user_id), scoped_id])
-            sql = _to_sql_params(f"UPDATE users SET {', '.join(updates)} WHERE username = ? AND hospital_id = ?")
+            uid_str = str(user_id)
+            if uid_str.upper() in ("U_ADMIN", "ADMIN"):
+                params.extend(["admin", scoped_id])
+                sql = _to_sql_params(f"UPDATE users SET {', '.join(updates)} WHERE LOWER(username) = LOWER(?) AND hospital_id = ?")
+            else:
+                params.extend([uid_str, scoped_id])
+                sql = _to_sql_params(f"UPDATE users SET {', '.join(updates)} WHERE username = ? AND hospital_id = ?")
 
         cursor.execute(sql, tuple(params))
         conn.commit()
@@ -12636,8 +12660,13 @@ def admin_reset_user_password(user_id, new_password, hospital_id=None):
             sql = _to_sql_params("UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE id = ? AND hospital_id = ?")
             cursor.execute(sql, (pw_hash, numeric_id, scoped_id))
         else:
-            sql = _to_sql_params("UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE username = ? AND hospital_id = ?")
-            cursor.execute(sql, (pw_hash, str(user_id), scoped_id))
+            uid_str = str(user_id)
+            if uid_str.upper() in ("U_ADMIN", "ADMIN"):
+                sql = _to_sql_params("UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE LOWER(username) = 'admin' AND hospital_id = ?")
+                cursor.execute(sql, (pw_hash, scoped_id))
+            else:
+                sql = _to_sql_params("UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE username = ? AND hospital_id = ?")
+                cursor.execute(sql, (pw_hash, uid_str, scoped_id))
         conn.commit()
         return cursor.rowcount > 0
 

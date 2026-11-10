@@ -3,6 +3,7 @@ import { Icon } from "./icons"
 import { Btn, Input, StatusBadge } from "./shared"
 import { db, DBOPEncounter, DBPatient } from "../services/db"
 import { doesDoctorMatchEncounter } from "../services/doctorPortalDb"
+import { getDoctorMaster } from "../services/doctorMaster"
 import { BillingDatabase, InvoiceItem } from "../services/billingDb"
 import { LabOrderDatabase, priceForTest } from "../services/labOrdersDb"
 import {
@@ -161,68 +162,22 @@ export const MASTER_HOSPITAL_SERVICES: HospitalServiceItem[] = [
   },
 ]
 
-const DOCTORS_LIST: DoctorProfile[] = [
-  {
-    id: "doc-1",
-    name: "Dr. Arjun Mehta",
-    specialty: "Cardiology",
-    room: "Room 107",
-  },
-  {
-    id: "doc-4",
-    name: "Dr. Rajesh Sharma",
-    specialty: "Cardiology",
-    room: "Room 104",
-  },
-  {
-    id: "doc-6",
-    name: "Dr. Priya Patel",
-    specialty: "Cardiology",
-    room: "Room 105",
-  },
-  {
-    id: "doc-8",
-    name: "Dr. Sarah Jenkins",
-    specialty: "Cardiology",
-    room: "Room 102",
-  },
-  {
-    id: "doc-5",
-    name: "Dr. David Anderson",
-    specialty: "Orthopedics",
-    room: "Room 112",
-  },
-  {
-    id: "doc-2",
-    name: "Dr. Sanjay Kapoor",
-    specialty: "Orthopedics",
-    room: "Room 116",
-  },
-  {
-    id: "doc-3",
-    name: "Dr. Vikram Malhotra",
-    specialty: "General Medicine",
-    room: "Room 111",
-  },
-  {
-    id: "doc-7",
-    name: "Dr. Anita Desai",
-    specialty: "General Medicine",
-    room: "Room 101",
-  },
-  {
-    id: "doc-9",
-    name: "Dr. Ramesh Kumar",
-    specialty: "General Medicine",
-    room: "Room 103",
-  },
-  {
-    id: "all",
-    name: "All Doctors (Combined Hospital Queue)",
-    specialty: "All Departments",
-    room: "All Rooms",
-  },
-]
+export const ALL_DOCTORS_PROFILE: DoctorProfile = {
+  id: "all",
+  name: "All Doctors (Combined Hospital Queue)",
+  specialty: "All Departments",
+  room: "All Rooms",
+}
+
+export function getActiveDoctorProfiles(): DoctorProfile[] {
+  const master = getDoctorMaster().filter((d) => d.verified)
+  return master.map((d) => ({
+    id: d.id,
+    name: d.name,
+    specialty: d.specialty || "General Medicine",
+    room: d.room || "Room 101",
+  }))
+}
 
 const DUMMY_PRESCRIPTION_TEMPLATES = [
   {
@@ -458,9 +413,32 @@ export default function DoctorWorkflow({
 }: {
   onNavigateToOPWorkflow?: (encounterId?: string) => void
 }) {
-  const [selectedDoctor, setSelectedDoctor] = useState<DoctorProfile>(
-    DOCTORS_LIST[0],
+  const [registeredDoctors, setRegisteredDoctors] = useState<DoctorProfile[]>(
+    () => getActiveDoctorProfiles(),
   )
+  const [selectedDoctor, setSelectedDoctor] = useState<DoctorProfile | null>(
+    () => {
+      const list = getActiveDoctorProfiles()
+      return list.length > 0 ? list[0] : null
+    },
+  )
+
+  useEffect(() => {
+    const updateDocs = () => {
+      const docs = getActiveDoctorProfiles()
+      setRegisteredDoctors(docs)
+      setSelectedDoctor((prev) => {
+        if (!prev) return docs.length > 0 ? docs[0] : null
+        if (prev.id === "all") return docs.length > 0 ? prev : null
+        const found = docs.find((d) => d.id === prev.id || d.name === prev.name)
+        return found || (docs.length > 0 ? docs[0] : null)
+      })
+    }
+    window.addEventListener("doctor_master_updated", updateDocs)
+    return () => {
+      window.removeEventListener("doctor_master_updated", updateDocs)
+    }
+  }, [])
   const [encounters, setEncounters] = useState<DBOPEncounter[]>([])
   const [patients, setPatients] = useState<DBPatient[]>([])
   const [activeEncounterId, setActiveEncounterId] = useState<string | null>(
@@ -569,9 +547,11 @@ export default function DoctorWorkflow({
     setPatients(pats)
 
     const docQueue =
-      selectedDoctor.id === "all"
-        ? encs
-        : encs.filter((e) => doesDoctorMatchEncounter(selectedDoctor, e))
+      !selectedDoctor
+        ? []
+        : selectedDoctor.id === "all"
+          ? encs
+          : encs.filter((e) => doesDoctorMatchEncounter(selectedDoctor, e))
 
     if (docQueue.length > 0) {
       const match =
@@ -646,9 +626,11 @@ export default function DoctorWorkflow({
 
   // Filter doctor queue strictly by assigned doctor
   const doctorQueue =
-    selectedDoctor.id === "all"
-      ? encounters
-      : encounters.filter((e) => doesDoctorMatchEncounter(selectedDoctor, e))
+    !selectedDoctor
+      ? []
+      : selectedDoctor.id === "all"
+        ? encounters
+        : encounters.filter((e) => doesDoctorMatchEncounter(selectedDoctor, e))
 
   const activeEncounter =
     doctorQueue.find((e) => e.id === activeEncounterId) ||
@@ -761,6 +743,10 @@ export default function DoctorWorkflow({
 
   // Submit Consultation Handler (Source of Truth)
   const handleSubmitConsultation = () => {
+    if (!selectedDoctor) {
+      alert("No registered doctor staff member selected. Please register a doctor in Doctor Master first.")
+      return
+    }
     if (!activeEncounter) {
       alert("No active patient selected from queue.")
       return
@@ -1144,36 +1130,46 @@ export default function DoctorWorkflow({
             <span className="text-[11.5px] font-semibold text-[#64748B]">
               Logged in as:
             </span>
-            <select
-              value={selectedDoctor.name}
-              onChange={(e) => {
-                const doc = DOCTORS_LIST.find((d) => d.name === e.target.value)
-                if (doc) {
-                  setSelectedDoctor(doc)
-                  const matchingEnc =
-                    doc.id === "all"
-                      ? encounters[0]
-                      : encounters.find(
-                          (enc) =>
-                            enc.assignedDoctor === doc.name ||
-                            enc.dept === doc.specialty,
-                        )
-                  if (matchingEnc) {
-                    setActiveEncounterId(matchingEnc.id)
-                    loadEncounterData(matchingEnc)
-                  } else {
-                    setActiveEncounterId(null)
+            {registeredDoctors.length === 0 ? (
+              <span className="text-[12px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                No Doctor Staff Registered
+              </span>
+            ) : (
+              <select
+                value={selectedDoctor?.name || ""}
+                onChange={(e) => {
+                  const allOptions = [...registeredDoctors, ALL_DOCTORS_PROFILE]
+                  const doc = allOptions.find((d) => d.name === e.target.value)
+                  if (doc) {
+                    setSelectedDoctor(doc)
+                    const matchingEnc =
+                      doc.id === "all"
+                        ? encounters[0]
+                        : encounters.find(
+                            (enc) =>
+                              enc.assignedDoctor === doc.name ||
+                              enc.dept === doc.specialty,
+                          )
+                    if (matchingEnc) {
+                      setActiveEncounterId(matchingEnc.id)
+                      loadEncounterData(matchingEnc)
+                    } else {
+                      setActiveEncounterId(null)
+                    }
                   }
-                }
-              }}
-              className="text-[12.5px] font-bold text-gray-900 bg-transparent focus:outline-none cursor-pointer"
-            >
-              {DOCTORS_LIST.map((d) => (
-                <option key={d.id} value={d.name}>
-                  {d.name} ({d.specialty} · {d.room})
+                }}
+                className="text-[12.5px] font-bold text-gray-900 bg-transparent focus:outline-none cursor-pointer"
+              >
+                {registeredDoctors.map((d) => (
+                  <option key={d.id} value={d.name}>
+                    {d.name} ({d.specialty} · {d.room})
+                  </option>
+                ))}
+                <option value={ALL_DOCTORS_PROFILE.name}>
+                  {ALL_DOCTORS_PROFILE.name}
                 </option>
-              ))}
-            </select>
+              </select>
+            )}
           </div>
 
           {onNavigateToOPWorkflow && (
@@ -1201,7 +1197,7 @@ export default function DoctorWorkflow({
                   My Consultation Queue
                 </h2>
                 <div className="text-[11px] text-[#64748B]">
-                  {selectedDoctor.specialty} · {selectedDoctor.room}
+                  {selectedDoctor ? `${selectedDoctor.specialty} · ${selectedDoctor.room}` : "No Doctor Registered"}
                 </div>
               </div>
               <span className="text-[11px] font-mono font-bold bg-[#DBEAFE] text-[#1B4FD8] px-2 py-0.5 rounded">
@@ -1210,25 +1206,36 @@ export default function DoctorWorkflow({
             </div>
 
             <div className="flex-1 overflow-y-auto divide-y divide-[#F1F5F9] p-2 space-y-1.5">
-              {doctorQueue.length === 0 ? (
+              {registeredDoctors.length === 0 ? (
+                <div className="p-6 text-center text-gray-500 space-y-2">
+                  <div className="text-3xl">👨‍⚕️</div>
+                  <div className="text-[13px] font-bold text-amber-800">
+                    No Doctor Staff Registered
+                  </div>
+                  <div className="text-[11px] text-[#64748B] leading-relaxed">
+                    There is currently no doctor staff registered in the hospital system. Please add doctors in <strong>Administration &rarr; Doctor Master</strong> or HRMS.
+                  </div>
+                </div>
+              ) : doctorQueue.length === 0 ? (
                 <div className="p-6 text-center text-gray-500 space-y-2">
                   <div className="text-3xl">☕</div>
                   <div className="text-[13px] font-bold text-gray-700">
                     No Patients in Queue
                   </div>
                   <div className="text-[11px] text-[#64748B]">
-                    No patients currently assigned to {selectedDoctor.name}.
+                    No patients currently assigned to {selectedDoctor?.name}.
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const allDoc = DOCTORS_LIST.find((d) => d.id === "all")
-                      if (allDoc) setSelectedDoctor(allDoc)
-                    }}
-                    className="mt-2 text-[11.5px] font-semibold text-[#1B4FD8] bg-blue-50 px-3 py-1 rounded border border-blue-200 hover:bg-blue-100 transition-colors"
-                  >
-                    View All Hospital Patients →
-                  </button>
+                  {selectedDoctor?.id !== "all" && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedDoctor(ALL_DOCTORS_PROFILE)
+                      }}
+                      className="mt-2 text-[11.5px] font-semibold text-[#1B4FD8] bg-blue-50 px-3 py-1 rounded border border-blue-200 hover:bg-blue-100 transition-colors"
+                    >
+                      View All Hospital Patients →
+                    </button>
+                  )}
                 </div>
               ) : (
                 doctorQueue.map((enc, idx) => {
@@ -2242,6 +2249,16 @@ export default function DoctorWorkflow({
                   </div>
                 </div>
               </div>
+            </div>
+          ) : registeredDoctors.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center bg-white border border-[#DDE2EC] rounded p-8 text-center text-[#64748B] space-y-3">
+              <span className="text-4xl block">👨‍⚕️</span>
+              <h3 className="text-[16px] font-bold text-gray-900">
+                No Doctor Staff Registered
+              </h3>
+              <p className="text-[12.5px] text-[#64748B] max-w-md leading-relaxed">
+                There are no doctors registered in the hospital. Register verified doctors in <strong>Administration &rarr; Doctor Master</strong> or HRMS Staff Directory to start conducting clinical consultations.
+              </p>
             </div>
           ) : (
             <div className="flex-1 flex items-center justify-center bg-white border border-[#DDE2EC] rounded p-8 text-center text-[#64748B]">

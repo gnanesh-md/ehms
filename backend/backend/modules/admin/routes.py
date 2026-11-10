@@ -208,12 +208,15 @@ def _validate_account_update(payload):
     payload = dict(payload or {})
     role_id = str(payload.get("roleId") or payload.get("role_id") or "").strip().upper()
     if role_id:
-        role = db_get_admin_role(role_id, current_hospital_id())
-        if role and str(role.get("status") or "active").lower() != "active":
-            raise ValueError("Inactive roles cannot be assigned to a staff account.")
-        payload["role_key"] = role_id
-        if role:
-            payload["allowedModules"] = normalize_module_access(role.get("allowedModules", []), user_type="normal")
+        if "ADMIN" not in role_id:
+            role = db_get_admin_role(role_id, current_hospital_id())
+            if role and str(role.get("status") or "active").lower() != "active":
+                raise ValueError("Inactive roles cannot be assigned to a staff account.")
+            payload["role_key"] = role_id
+            if role:
+                payload["allowedModules"] = normalize_module_access(role.get("allowedModules", []), user_type="normal")
+        else:
+            payload["role_key"] = "ROLE_ADMIN"
 
     if "allowedModules" in payload or "module_access" in payload:
         modules = payload.get("allowedModules", payload.get("module_access", []))
@@ -221,6 +224,10 @@ def _validate_account_update(payload):
 
     if "status" in payload:
         payload["status"] = str(payload["status"]).strip().lower()
+    if "username" in payload:
+        payload["username"] = str(payload["username"]).strip().lower()
+    if "password" in payload and str(payload["password"]).strip():
+        payload["password"] = str(payload["password"]).strip()
     return payload
 
 

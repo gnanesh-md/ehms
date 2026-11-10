@@ -503,8 +503,8 @@ def resolve_user_profile(user_row) -> dict:
 
     return {
         "username": user_row.get("username"),
-        "role": user_row.get("role"),
-        "role_key": user_row.get("role_key"),
+        "role": user_row.get("role_key") or ("ROLE_ADMIN" if user_type == "admin" else user_row.get("role")),
+        "role_key": user_row.get("role_key") or ("ROLE_ADMIN" if user_type == "admin" else None),
         "access_role": user_row.get("access_role"),
         "job_role": user_row.get("job_role"),
         "user_type": user_type,

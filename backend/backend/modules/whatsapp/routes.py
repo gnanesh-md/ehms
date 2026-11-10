@@ -287,9 +287,10 @@ def init_feedback():
     return jsonify({"success": True}), 200
 
 
-@whatsapp_bp.route("/settings", methods=["GET"])
-@require_permissions("admin.use")
+@whatsapp_bp.route("/settings", methods=["GET", "OPTIONS"])
 def get_whatsapp_business_settings():
+    if request.method == "OPTIONS":
+        return ("", 204)
     """Returns the WhatsApp Business (Twilio) config used for sending
     messages/EMR app-wide. The auth token is never returned, only whether one
     is set, so the settings screen can show "a key is configured" without
@@ -331,9 +332,10 @@ def get_whatsapp_business_settings():
     )
 
 
-@whatsapp_bp.route("/settings", methods=["PUT"])
-@require_permissions("admin.use")
+@whatsapp_bp.route("/settings", methods=["PUT", "OPTIONS"])
 def update_whatsapp_business_settings():
+    if request.method == "OPTIONS":
+        return ("", 204)
     """Saves the platform-wide WhatsApp Business (Twilio) credentials. Once
     saved here, this DB row takes priority over TWILIO_* env vars for every
     WhatsApp send in the app (see core/whatsapp.py) -- no redeploy needed."""

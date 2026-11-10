@@ -175,8 +175,8 @@ export default function QueueManagement({
         setNowCalling({
           token: inConsult.queueToken || inConsult.opNumber,
           patientName: inConsult.patientName,
-          room: inConsult.room || "Room 107",
-          doctor: inConsult.assignedDoctor || "Dr. Arjun Mehta",
+          room: inConsult.room || "",
+          doctor: inConsult.assignedDoctor || "Unassigned",
           dept: inConsult.dept,
           timestamp: new Date().toLocaleTimeString([], {
             hour: "2-digit",

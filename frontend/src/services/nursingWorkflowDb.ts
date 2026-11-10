@@ -167,92 +167,9 @@ export interface NursingTimelineEvent {
   badge?: string
 }
 
-export const PREDEFINED_NURSES: NurseStaff[] = [
-  {
-    id: "N001",
-    name: "Jessica Carter, RN",
-    username: "jcarter@generalhospital.org",
-    role: "Nurse",
-    title: "Registered Staff Nurse",
-    department: "Cardiology",
-    unit: "Cardiac Care Unit",
-    defaultShift: "morning",
-  },
-  {
-    id: "N002",
-    name: "Michael Lee, RN",
-    username: "mlee@generalhospital.org",
-    role: "Nurse",
-    title: "Registered Staff Nurse",
-    department: "Cardiology",
-    unit: "Cardiac Care Unit",
-    defaultShift: "evening",
-  },
-  {
-    id: "N003",
-    name: "Sarah Wilson, RN",
-    username: "swilson@generalhospital.org",
-    role: "Nurse",
-    title: "Staff Nurse (Med/Surg)",
-    department: "Internal Medicine",
-    unit: "3N Medical/Surgical",
-    defaultShift: "morning",
-  },
-  {
-    id: "N004",
-    name: "Priya Sharma, RN",
-    username: "psharma@generalhospital.org",
-    role: "Nurse",
-    title: "Critical Care Specialist Nurse",
-    department: "Critical Care",
-    unit: "Intensive Care Unit (ICU)",
-    defaultShift: "night",
-  },
-  {
-    id: "N005",
-    name: "David Miller, RN",
-    username: "dmiller@generalhospital.org",
-    role: "Nurse",
-    title: "Surgical Inpatient Nurse",
-    department: "Surgical Services",
-    unit: "4S Surgical",
-    defaultShift: "morning",
-  },
-  {
-    id: "N000",
-    name: "Elena Rostova, RN (Supervisor)",
-    username: "erostova@generalhospital.org",
-    role: "Supervisor",
-    title: "Nursing Supervisor & Shift Lead",
-    department: "Nursing Administration",
-    unit: "Hospital-Wide Nursing Stations",
-    defaultShift: "morning",
-  },
-]
+export const PREDEFINED_NURSES: NurseStaff[] = []
 
-export const PREDEFINED_DOCTORS: DoctorStaff[] = [
-  {
-    id: "DOC-101",
-    name: "Dr. Arjun Rao",
-    username: "arao@generalhospital.org",
-    department: "Cardiology",
-    specialty: "Interventional Cardiology",
-  },
-  {
-    id: "DOC-4401",
-    name: "Dr. Vikram Seth",
-    username: "vseth@generalhospital.org",
-    department: "Internal Medicine",
-    specialty: "Internal Medicine & Critical Care",
-  },
-  {
-    id: "DOC-3001",
-    name: "Dr. M. Anderson",
-    username: "manderson@generalhospital.org",
-    department: "Internal Medicine",
-    specialty: "General Inpatient Medicine",
-  },
-]
+export const PREDEFINED_DOCTORS: DoctorStaff[] = []
 
 // Storage keys
 const KEY_AUTH_USER = "hms_nursing_active_user"
@@ -274,18 +191,17 @@ export class NursingWorkflowDb {
         return JSON.parse(saved)
       }
     } catch {}
-    // Default to Jessica Carter, RN
-    return { type: "nurse", profile: PREDEFINED_NURSES[0] }
+    return { type: "admin", profile: { id: "ADM-001", name: "System Administrator", role: "admin", department: "Hospital Administration" } }
   }
 
   static setAuthenticatedUser(type: "nurse" | "doctor" | "admin", id: string) {
     let profile: any = null
     if (type === "nurse") {
       profile =
-        PREDEFINED_NURSES.find((n) => n.id === id) || PREDEFINED_NURSES[0]
+        PREDEFINED_NURSES.find((n) => n.id === id) || null
     } else if (type === "doctor") {
       profile =
-        PREDEFINED_DOCTORS.find((d) => d.id === id) || PREDEFINED_DOCTORS[0]
+        PREDEFINED_DOCTORS.find((d) => d.id === id) || null
     } else {
       profile = {
         id: "ADM-001",

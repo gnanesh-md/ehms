@@ -945,13 +945,27 @@ export default function OPManagement({
                           {/* Floor Actions */}
                           <td className="px-4 py-3 text-right whitespace-nowrap">
                             <div className="flex items-center justify-end gap-1.5">
-                              {isAwaitingVitals && (
+                              {!isCompleted && (
                                 <button
                                   type="button"
                                   onClick={() => callToNurse(enc)}
-                                  className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold rounded-none cursor-pointer shadow-xs transition-colors"
+                                  className={`px-2.5 py-1 text-[11px] font-bold rounded-none cursor-pointer shadow-xs transition-colors flex items-center gap-1 ${
+                                    enc.timestamps?.calledToNurse
+                                      ? "bg-teal-50 text-teal-800 border border-teal-300 hover:bg-teal-100"
+                                      : "bg-blue-600 hover:bg-blue-700 text-white"
+                                  }`}
+                                  title={
+                                    enc.timestamps?.calledToNurse
+                                      ? `Called to Nurse Station at ${enc.timestamps.calledToNurse}. Click to re-call.`
+                                      : "Call Patient to Nurse Station"
+                                  }
                                 >
-                                  📢 Call Nurse
+                                  <span>🩺</span>
+                                  <span>
+                                    {enc.timestamps?.calledToNurse
+                                      ? `Called Nurse (${enc.timestamps.calledToNurse})`
+                                      : "Call to Nurse Station"}
+                                  </span>
                                 </button>
                               )}
 

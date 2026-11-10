@@ -635,8 +635,16 @@ class HospitalDatabase {
       const parsed: DBOPEncounter[] = JSON.parse(data)
       const list = dropLegacySeeds(parsed, SEED_OP_ENCOUNTERS, (e) => e.id, (e) => e.patientName)
       let merged = list.length !== parsed.length
-      // Data hygiene / healing: Ensure every encounter has an immutable calendar date & createdAt
+      // Data hygiene / healing: Ensure every encounter has an immutable calendar date & createdAt, and purge fake placeholder doctors
       for (const e of list) {
+        if (e.assignedDoctor === "Dr. Staff" || e.assignedDoctor === "Dr. Staff Physician") {
+          e.assignedDoctor = ""
+          merged = true
+        }
+        if ((e as any).doctorAssigned === "Dr. Staff" || (e as any).doctorAssigned === "Dr. Staff Physician") {
+          (e as any).doctorAssigned = ""
+          merged = true
+        }
         if (!e.date || !e.createdAt) {
           // 1. Try timestamps arrival or registration if they contain a date
           const ts = e.timestamps?.arrival || e.timestamps?.registration
@@ -1652,10 +1660,14 @@ class HospitalDatabase {
           if (existingIndex >= 0) {
             const existing = encounters[existingIndex]
             const newStatus = item.status === "in_consultation" ? "Under Consultation" : item.status === "checked_in" ? "In Queue" : existing.status
-            // "Dr. Staff" is a placeholder older versions sent to the server for a patient with no
-            // doctor yet; it must not overwrite a doctor the desk has since booked.
-            const serverDoctor = item.doctor_name && item.doctor_name !== "Dr. Staff" ? item.doctor_name : ""
-            const newDoc = serverDoctor || (existing as any).assignedDoctor || (existing as any).doctorAssigned || item.doctor_name
+            // If item.doctor_name is absent or a legacy placeholder ("Dr. Staff"), do not treat it as a doctor
+            const serverDoctor =
+              item.doctor_name &&
+              item.doctor_name !== "Dr. Staff" &&
+              item.doctor_name !== "Dr. Staff Physician"
+                ? item.doctor_name
+                : ""
+            const newDoc = serverDoctor || (existing as any).assignedDoctor || (existing as any).doctorAssigned || ""
             // Encounters this sync created are the server's patients: keep their
             // details in step with it. This also repairs the placeholders
             // ("+91 98765 43210", age 40, O+, "Main City") earlier versions
@@ -1690,6 +1702,13 @@ class HospitalDatabase {
             const itemDateStr = itemDateIso.split("T")[0]
             const itemTimeStr = item.time_slot || new Date(itemDateIso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
 
+            const serverDoctor =
+              item.doctor_name &&
+              item.doctor_name !== "Dr. Staff" &&
+              item.doctor_name !== "Dr. Staff Physician"
+                ? item.doctor_name
+                : ""
+
             const newEnc: DBOPEncounter = {
               id: encId,
               opNumber: `OP-${item.patient_id || "101"}`,
@@ -1710,8 +1729,8 @@ class HospitalDatabase {
               chiefComplaint: item.chief_complaint || "OP Visit",
               symptoms: item.chief_complaint ? [item.chief_complaint] : ["General Consultation"],
               aiSpecialty: item.department || "General Medicine",
-              assignedDoctor: item.doctor_name || "Dr. Staff",
-              doctorAssigned: item.doctor_name || "Dr. Staff",
+              assignedDoctor: serverDoctor,
+              doctorAssigned: serverDoctor,
               consultationType: "General Consultation",
               consultationFee: 500,
               payment: {

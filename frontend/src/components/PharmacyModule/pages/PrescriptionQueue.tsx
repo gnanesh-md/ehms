@@ -26,12 +26,11 @@ import PageHeader from "../components/PageHeader"
 import StatusBadge from "../components/StatusBadge"
 
 const filters = [
-  "All",
+  "Active Queue",
   "Pending",
-  "Processing",
   "Ready",
   "Dispensed",
-  "Rejected",
+  "All",
 ]
 
 interface PrescriptionQueueProps {
@@ -111,10 +110,14 @@ export default function PrescriptionQueue({
   onNavigate,
 }: PrescriptionQueueProps) {
   const { prescriptions, medicines, batches = [], refresh } = usePharmacyData()
-  const [activeFilter, setActiveFilter] = useState("All")
+  const [activeFilter, setActiveFilter] = useState("Active Queue")
   const [selected, setSelected] = useState<typeof prescriptions[0] | null>(null)
   const [search, setSearch] = useState("")
   const [isRefreshing, setIsRefreshing] = useState(false)
+
+  const selectedStock = selected
+    ? getPrescriptionStockStatus(selected.rawItems, medicines, batches)
+    : null
 
   const handleManualRefresh = () => {
     setIsRefreshing(true)
@@ -122,12 +125,36 @@ export default function PrescriptionQueue({
     setTimeout(() => setIsRefreshing(false), 500)
   }
 
+  const counts = useMemo(() => {
+    const list = prescriptions || []
+    return {
+      "Active Queue": list.filter((rx) => {
+        const s = (rx.status || "").toLowerCase()
+        return s !== "dispensed" && s !== "rejected" && s !== "cancelled"
+      }).length,
+      Pending: list.filter((rx) => (rx.status || "").toLowerCase() === "pending").length,
+      Ready: list.filter((rx) => (rx.status || "").toLowerCase() === "ready").length,
+      Dispensed: list.filter((rx) => (rx.status || "").toLowerCase() === "dispensed").length,
+      All: list.length,
+    }
+  }, [prescriptions])
+
   const filtered = (prescriptions || [])
     .filter((rx) => {
       if (!rx) return false
       const rxStatus = (rx.status || "").toLowerCase()
-      const matchStatus =
-        activeFilter === "All" || rxStatus === activeFilter.toLowerCase()
+      const isDispensed = rxStatus === "dispensed"
+      const isClosed = isDispensed || rxStatus === "rejected" || rxStatus === "cancelled"
+      
+      let matchStatus = true
+      if (activeFilter === "Active Queue") {
+        matchStatus = !isClosed
+      } else if (activeFilter === "Dispensed") {
+        matchStatus = isDispensed
+      } else if (activeFilter !== "All") {
+        matchStatus = rxStatus === activeFilter.toLowerCase()
+      }
+
       const q = (search || "").toLowerCase().trim()
       const matchSearch =
         !q ||
@@ -167,19 +194,34 @@ export default function PrescriptionQueue({
           {/* Filters & Actions */}
           <div className="flex items-center gap-3 mt-4 mb-0 flex-wrap">
             <div className="flex rounded border border-[#E2E8F0] overflow-hidden bg-white text-[13px]">
-              {filters.map((f) => (
-                <button
-                  key={f}
-                  onClick={() => setActiveFilter(f)}
-                  className="px-4 py-2 font-medium transition-colors border-r last:border-r-0 border-[#E2E8F0]"
-                  style={{
-                    background: activeFilter === f ? "#0F1624" : "#fff",
-                    color: activeFilter === f ? "#fff" : "#64748B",
-                  }}
-                >
-                  {f}
-                </button>
-              ))}
+              {filters.map((f) => {
+                const count = (counts as any)[f] ?? 0
+                const isSelected = activeFilter === f
+                return (
+                  <button
+                    key={f}
+                    onClick={() => setActiveFilter(f)}
+                    className="px-3.5 py-2 font-medium transition-colors border-r last:border-r-0 border-[#E2E8F0] flex items-center gap-1.5 cursor-pointer"
+                    style={{
+                      background: isSelected ? "#0F1624" : "#fff",
+                      color: isSelected ? "#fff" : "#64748B",
+                    }}
+                  >
+                    <span>{f}</span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                        isSelected
+                          ? "bg-white/20 text-white"
+                          : f === "Active Queue" && count > 0
+                            ? "bg-amber-100 text-amber-800"
+                            : "bg-slate-100 text-slate-600"
+                      }`}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                )
+              })}
             </div>
             <div className="flex items-center gap-2 ml-auto">
               <button
@@ -300,7 +342,7 @@ export default function PrescriptionQueue({
                             >
                               View <ChevronRight size={12} />
                             </button>
-                            {rx.status !== "dispensed" && (
+                            {rx.status !== "dispensed" ? (
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -308,10 +350,26 @@ export default function PrescriptionQueue({
                                   localStorage.setItem("_v2_pharmacy_dispense_rx", rx.id)
                                   onNavigate("dispensing")
                                 }}
-                                className="flex items-center gap-1 text-[12px] font-bold px-2.5 py-1 rounded bg-[#0F766E] text-white hover:bg-[#0c5e58] transition-colors shadow-sm"
+                                className={`flex items-center gap-1 text-[11.5px] font-bold px-2.5 py-1 rounded transition-colors shadow-2xs cursor-pointer ${
+                                  stockStatus.type === "mixed"
+                                    ? "bg-amber-600 hover:bg-amber-700 text-white"
+                                    : "bg-[#0F766E] hover:bg-[#0c5e58] text-white"
+                                }`}
+                                title={
+                                  stockStatus.type === "mixed"
+                                    ? "Sell available inventory items and complete dispensing"
+                                    : "Dispense prescription"
+                                }
                               >
-                                <Play size={11} /> Dispense
+                                <Play size={11} />{" "}
+                                {stockStatus.type === "mixed"
+                                  ? "Dispense Available"
+                                  : "Dispense"}
                               </button>
+                            ) : (
+                              <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
+                                ✓ Dispensed
+                              </span>
                             )}
                           </div>
                         </td>
@@ -470,14 +528,25 @@ export default function PrescriptionQueue({
           </div>
 
           <div className="p-4 border-t border-[#E2E8F0] space-y-2">
+            {selectedStock?.type === "mixed" && (
+              <div className="p-2.5 bg-amber-50 border border-amber-200 text-amber-800 text-[11.5px] rounded">
+                <strong>Semi-Inventory:</strong> Only available medicines will be allocated and sold. Completing sale will mark prescription as Dispensed and remove it from the active queue.
+              </div>
+            )}
             {selected.status !== "dispensed" && (
               <div className="grid grid-cols-1 gap-2">
                 <button
                   onClick={handleDispense}
-                  className="flex items-center justify-center gap-1.5 py-2.5 rounded text-white text-[12px] font-medium hover:opacity-90 transition-colors"
-                  style={{ background: "#0F766E" }}
+                  className={`flex items-center justify-center gap-1.5 py-2.5 rounded text-white text-[13px] font-bold hover:opacity-90 transition-colors shadow-xs cursor-pointer ${
+                    selectedStock?.type === "mixed"
+                      ? "bg-amber-600 hover:bg-amber-700"
+                      : "bg-[#0F766E] hover:bg-[#0c5e58]"
+                  }`}
                 >
-                  <Play size={13} /> Dispense Items
+                  <Play size={13} />{" "}
+                  {selectedStock?.type === "mixed"
+                    ? "⚡ Dispense Available Items"
+                    : "Dispense Prescription"}
                 </button>
               </div>
             )}
