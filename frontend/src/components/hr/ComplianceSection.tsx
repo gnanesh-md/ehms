@@ -23,11 +23,12 @@ function Alerts({ canManage }: { canManage: boolean }) {
   const [status, setStatus] = useState("open")
   const list = useHr(() => hr.get<any[]>("/api/v1/compliance/alerts", { status }), [status])
   const [busy, run] = useRun()
+  const alertsList = Array.isArray(list.data) ? list.data : []
   return (
     <Panel title="Expiry alerts" actions={<select className={filterCls} value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status"><option value="open">Open</option><option value="acknowledged">Acknowledged</option></select>}>
-      {list.loading && !list.data ? <Loading /> : !list.data?.length ? <Empty title="No alerts" /> : (
+      {list.loading && !list.data ? <Loading /> : !alertsList.length ? <Empty title="No alerts" /> : (
         <Table head={["Due", "Employee", "Item", "Type", "Days left", ""]}>
-          {list.data.map((a) => (
+          {alertsList.map((a) => (
             <tr key={a.id}>
               <td className="px-4 py-2 whitespace-nowrap">{fmtDate(a.due_date)}</td>
               <td className="px-4 py-2">{a.employee_name}</td>
@@ -47,7 +48,9 @@ function Records() {
   const [status, setStatus] = useState("non_compliant")
   const list = useHr(() => hr.get<any[]>("/api/v1/compliance/records", { status: status || undefined }), [status])
   const all = useHr(() => hr.get<any[]>("/api/v1/compliance/records"), [])
-  const count = (s: string) => all.data?.filter((r) => r.status === s).length ?? 0
+  const recordsList = Array.isArray(list.data) ? list.data : []
+  const allList = Array.isArray(all.data) ? all.data : []
+  const count = (s: string) => allList.filter((r) => r.status === s).length
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-3 gap-3">
@@ -55,10 +58,10 @@ function Records() {
         <Kpi label="Expiring soon" value={count("expiring")} tone="warn" onClick={() => setStatus("expiring")} />
         <Kpi label="Non-compliant" value={count("non_compliant")} tone="bad" onClick={() => setStatus("non_compliant")} />
       </div>
-      <Panel title={`Compliance status${all.data?.[0] ? ` · last scan ${fmtDateTime(all.data[0].checked_at)}` : ""}`}>
-        {list.loading && !list.data ? <Loading /> : !list.data?.length ? <Empty title="Nothing here" hint="Run a scan to evaluate everyone's requirements." /> : (
+      <Panel title={`Compliance status${allList[0] ? ` · last scan ${fmtDateTime(allList[0].checked_at)}` : ""}`}>
+        {list.loading && !list.data ? <Loading /> : !recordsList.length ? <Empty title="Nothing here" hint="Run a scan to evaluate everyone's requirements." /> : (
           <Table head={["Employee", "Requirement", "Status", "Detail", "Due"]}>
-            {list.data.map((r, i) => (
+            {recordsList.map((r, i) => (
               <tr key={i}>
                 <td className="px-4 py-2">{r.employee_name}</td>
                 <td className="px-4 py-2">{humanize(r.requirement.replace(":", ": "))}</td>

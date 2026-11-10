@@ -11,6 +11,7 @@ import reportsRouter from './routes/reports.mjs';
 import eventsRouter from './routes/events.mjs';
 import biometricRouter from './routes/biometric.mjs';
 import apiV1HrRouter from './routes/api_v1_hr.mjs';
+import apiV1GeneralRouter from './routes/api_v1_general.mjs';
 import { testConnection, ensureSchema } from './db/index.mjs';
 
 const app = express();
@@ -48,8 +49,9 @@ app.get('/health', async (req, res) => {
 // ADMS / iClock Protocol Root Mounts (eSSL & ZKTeco Cloud Server direct hardware push)
 app.use('/iclock', biometricRouter);
 
-// Fast v1 HR API routes (matching /api/v1/hr)
+// Fast v1 HR API routes (matching /api/v1/hr and /api/v1/*)
 app.use('/api/v1/hr', apiV1HrRouter);
+app.use('/api/v1', apiV1GeneralRouter);
 app.get('/api/v1/me/notifications', (req, res) => res.json([]));
 
 // HRMS Module Routes

@@ -28,19 +28,25 @@ function Matrix() {
   const refs = useOrgRefs()
   const [dept, setDept] = useState("")
   const m = useHr(() => hr.get<{ programs: { id: string; code: string; title: string }[]; rows: { employee_id: string; employee_name: string; category: string; cells: Record<string, { state: string; expires_on: string | null }> }[]; gaps: number }>("/api/v1/training/matrix", { department_id: dept || undefined }), [dept])
+
+  const programs = Array.isArray(m.data?.programs) ? m.data.programs : []
+  const rows = Array.isArray(m.data?.rows) ? m.data.rows : []
+  const gaps = typeof m.data?.gaps === "number" ? m.data.gaps : 0
+  const deptList = Array.isArray(refs.data?.departments) ? refs.data.departments : []
+
   return (
-    <Panel title={m.data ? `Mandatory training · ${m.data.gaps} gaps` : "Mandatory training"} actions={<select className={filterCls} value={dept} onChange={(e) => setDept(e.target.value)} aria-label="Department"><option value="">All departments</option>{refs.data?.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</select>}>
-      {m.loading && !m.data ? <Loading /> : !m.data?.programs.length ? <Empty title="No mandatory programmes" hint="Mark a programme mandatory for staff categories (e.g. BLS for nurses) to see who is covered." /> : (
+    <Panel title={m.data ? `Mandatory training · ${gaps} gaps` : "Mandatory training"} actions={<select className={filterCls} value={dept} onChange={(e) => setDept(e.target.value)} aria-label="Department"><option value="">All departments</option>{deptList.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</select>}>
+      {m.loading && !m.data ? <Loading /> : !programs.length ? <Empty title="No mandatory programmes" hint="Mark a programme mandatory for staff categories (e.g. BLS for nurses) to see who is covered." /> : (
         <div className="overflow-x-auto -mx-4">
           <table className="text-xs">
-            <thead><tr><th className="px-4 py-2 text-left font-semibold text-gray-500 uppercase tracking-wider">Employee</th>{m.data.programs.map((p) => <th key={p.id} className="px-2 py-2 font-semibold text-gray-500 uppercase tracking-wider" title={p.title}>{p.code}</th>)}</tr></thead>
+            <thead><tr><th className="px-4 py-2 text-left font-semibold text-gray-500 uppercase tracking-wider">Employee</th>{programs.map((p) => <th key={p.id} className="px-2 py-2 font-semibold text-gray-500 uppercase tracking-wider" title={p.title}>{p.code}</th>)}</tr></thead>
             <tbody>
-              {m.data.rows.map((r) => (
+              {rows.map((r) => (
                 <tr key={r.employee_id} className="border-t border-[#DDE2EC]">
                   <td className="px-4 py-1 text-sm text-gray-900 font-medium">{r.employee_name}</td>
-                  {m.data!.programs.map((p) => {
-                    const c = r.cells[p.id]
-                    return <td key={p.id} className="px-1 py-1 text-center">{c ? <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-medium ${CELL[c.state]}`} title={c.expires_on ? `expires ${c.expires_on}` : ""}>{c.state === "valid" ? "✓" : humanize(c.state)}</span> : <span className="text-gray-300">n/a</span>}</td>
+                  {programs.map((p) => {
+                    const c = r.cells?.[p.id]
+                    return <td key={p.id} className="px-1 py-1 text-center">{c ? <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-medium ${CELL[c.state] || CELL.missing}`} title={c.expires_on ? `expires ${c.expires_on}` : ""}>{c.state === "valid" ? "✓" : humanize(c.state)}</span> : <span className="text-gray-300">n/a</span>}</td>
                   })}
                 </tr>
               ))}
@@ -56,17 +62,19 @@ function Programs({ canManage }: { canManage: boolean }) {
   const list = useHr(() => hr.get<Program[]>("/api/v1/training/programs"), [])
   const [f, setF] = useState<any>(null)
   const [busy, run] = useRun()
+  const programList = Array.isArray(list.data) ? list.data : []
+
   return (
     <Panel title="Training programmes" actions={canManage && <Btn variant="primary" onClick={() => setF({ code: "", title: "", category: "bls", validity_months: "24", mandatory_for: [] as string[], pass_score: "" })}><Plus className="w-3.5 h-3.5" /> Programme</Btn>}>
-      {list.loading && !list.data ? <Loading /> : !list.data?.length ? <Empty title="No programmes" /> : (
+      {list.loading && !list.data ? <Loading /> : !programList.length ? <Empty title="No programmes" /> : (
         <Table head={["Code", "Title", "Category", "Valid for", "Mandatory for", "Pass mark"]}>
-          {list.data.map((p) => (
+          {programList.map((p) => (
             <tr key={p.id}>
               <td className="px-4 py-2 font-mono text-xs">{p.code}</td>
               <td className="px-4 py-2">{p.title}</td>
               <td className="px-4 py-2">{humanize(p.category)}</td>
               <td className="px-4 py-2">{p.validity_months ? `${p.validity_months} months` : "No expiry"}</td>
-              <td className="px-4 py-2 text-xs">{p.mandatory_for.length ? p.mandatory_for.map(humanize).join(", ") : "—"}</td>
+              <td className="px-4 py-2 text-xs">{Array.isArray(p.mandatory_for) && p.mandatory_for.length ? p.mandatory_for.map(humanize).join(", ") : "—"}</td>
               <td className="px-4 py-2">{p.pass_score ?? "—"}</td>
             </tr>
           ))}
@@ -84,7 +92,7 @@ function Programs({ canManage }: { canManage: boolean }) {
               <Field label="Mandatory for">
                 <div className="flex flex-wrap gap-2">
                   {[["all", "Everyone"], ...EMPLOYEE_CATEGORIES].map(([k, l]) => (
-                    <label key={k} className="flex items-center gap-1 text-xs"><input type="checkbox" checked={f.mandatory_for.includes(k)} onChange={(e) => setF({ ...f, mandatory_for: e.target.checked ? [...f.mandatory_for, k] : f.mandatory_for.filter((x: string) => x !== k) })} />{l}</label>
+                    <label key={k} className="flex items-center gap-1 text-xs"><input type="checkbox" checked={Array.isArray(f.mandatory_for) && f.mandatory_for.includes(k)} onChange={(e) => setF({ ...f, mandatory_for: e.target.checked ? [...(f.mandatory_for || []), k] : (f.mandatory_for || []).filter((x: string) => x !== k) })} />{l}</label>
                   ))}
                 </div>
               </Field>
@@ -102,11 +110,14 @@ function Sessions({ canManage }: { canManage: boolean }) {
   const [f, setF] = useState<any>(null)
   const [open, setOpen] = useState<Session | null>(null)
   const [busy, run] = useRun()
+  const programList = Array.isArray(programs.data) ? programs.data : []
+  const sessionList = Array.isArray(list.data) ? list.data : []
+
   return (
-    <Panel title="Training sessions" actions={canManage && <Btn variant="primary" disabled={!programs.data?.length} onClick={() => setF({ program_id: programs.data?.[0]?.id, starts_at: "", ends_at: "", location: "", trainer: "", capacity: "" })}><Plus className="w-3.5 h-3.5" /> Schedule session</Btn>}>
-      {list.loading && !list.data ? <Loading /> : !list.data?.length ? <Empty title="No sessions" /> : (
+    <Panel title="Training sessions" actions={canManage && <Btn variant="primary" disabled={!programList.length} onClick={() => setF({ program_id: programList[0]?.id, starts_at: "", ends_at: "", location: "", trainer: "", capacity: "" })}><Plus className="w-3.5 h-3.5" /> Schedule session</Btn>}>
+      {list.loading && !list.data ? <Loading /> : !sessionList.length ? <Empty title="No sessions" /> : (
         <Table head={["Programme", "When", "Where", "Trainer", "Enrolled", ""]}>
-          {list.data.map((s) => (
+          {sessionList.map((s) => (
             <tr key={s.id} className="hover:bg-[#F8FAFC] cursor-pointer" onClick={() => setOpen(s)}>
               <td className="px-4 py-2">{s.program}</td>
               <td className="px-4 py-2 whitespace-nowrap">{fmtDateTime(s.starts_at)}</td>
@@ -121,7 +132,7 @@ function Sessions({ canManage }: { canManage: boolean }) {
       {f && (
         <Drawer open title="Schedule a session" onClose={() => setF(null)} footer={<><Btn onClick={() => setF(null)}>Cancel</Btn><Btn variant="primary" busy={busy === "s"} disabled={!f.starts_at || !f.ends_at} onClick={() => run("s", () => hr.post("/api/v1/training/sessions", { ...f, starts_at: new Date(f.starts_at).toISOString(), ends_at: new Date(f.ends_at).toISOString(), capacity: f.capacity ? Number(f.capacity) : null, location: f.location || null, trainer: f.trainer || null }), "Session scheduled").then((r) => { if (r) { setF(null); list.reload() } })}>Save</Btn></>}>
           <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2"><Field label="Programme"><select className={inputCls} value={f.program_id} onChange={(e) => setF({ ...f, program_id: e.target.value })}>{programs.data?.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}</select></Field></div>
+            <div className="col-span-2"><Field label="Programme"><select className={inputCls} value={f.program_id} onChange={(e) => setF({ ...f, program_id: e.target.value })}>{programList.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}</select></Field></div>
             <Field label="Starts"><input type="datetime-local" className={inputCls} value={f.starts_at} onChange={(e) => setF({ ...f, starts_at: e.target.value })} /></Field>
             <Field label="Ends"><input type="datetime-local" className={inputCls} value={f.ends_at} onChange={(e) => setF({ ...f, ends_at: e.target.value })} /></Field>
             <Field label="Location"><input className={inputCls} value={f.location} onChange={(e) => setF({ ...f, location: e.target.value })} /></Field>
@@ -140,6 +151,9 @@ function SessionDrawer({ session, canManage, onClose }: { session: Session; canM
   const [q, setQ] = useState("")
   const people = useHr(() => (q.length >= 1 ? hr.get<Page<EmployeeListItem>>("/api/v1/hr/employees", { search: q, status: "active", page_size: 8 }) : Promise.resolve(null)), [q])
   const [busy, run] = useRun()
+  const enrollments = Array.isArray(enr.data) ? enr.data : []
+  const peopleList = Array.isArray(people.data?.items) ? people.data.items : []
+
   const result = (id: string, status: string) => {
     let score: number | null = null
     if (status === "passed" || status === "failed") {
@@ -154,16 +168,16 @@ function SessionDrawer({ session, canManage, onClose }: { session: Session; canM
       {canManage && (
         <div className="max-w-sm mb-4">
           <input className={inputCls} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Enrol staff: search" />
-          {people.data?.items.map((p) => (
+          {peopleList.map((p) => (
             <button key={p.id} onClick={() => run("enrol", () => hr.post(`/api/v1/training/sessions/${session.id}/enroll`, { employee_ids: [p.id] }), `${p.full_name} enrolled`).then(() => { setQ(""); enr.reload() })} className="block w-full text-left px-3 py-1.5 text-sm hover:bg-[#F8FAFC] rounded text-gray-800">
               {p.full_name} <span className="text-[11px] text-gray-400">{p.department}</span>
             </button>
           ))}
         </div>
       )}
-      {!enr.data?.length ? <Empty title="Nobody enrolled" /> : (
+      {!enrollments.length ? <Empty title="Nobody enrolled" /> : (
         <Table head={["Employee", "Status", "Score", ""]}>
-          {enr.data.map((e) => (
+          {enrollments.map((e) => (
             <tr key={e.id}>
               <td className="px-4 py-2">{e.employee_name}</td>
               <td className="px-4 py-2"><StatusBadge value={e.status === "passed" || e.status === "attended" ? "success" : e.status === "enrolled" ? "pending" : "failed"} label={humanize(e.status)} /></td>
@@ -189,11 +203,13 @@ function SessionDrawer({ session, canManage, onClose }: { session: Session; canM
 function Certificates({ canManage }: { canManage: boolean }) {
   const [within, setWithin] = useState("90")
   const list = useHr(() => hr.get<any[]>("/api/v1/training/certifications", { expiring_within: within ? Number(within) : undefined }), [within])
+  const certList = Array.isArray(list.data) ? list.data : []
+
   return (
     <Panel title="Certificates" actions={<select className={filterCls} value={within} onChange={(e) => setWithin(e.target.value)} aria-label="Expiring"><option value="30">Expiring in 30 days</option><option value="90">Expiring in 90 days</option><option value="">All valid</option></select>}>
-      {list.loading && !list.data ? <Loading /> : !list.data?.length ? <Empty title="No certificates in this range" /> : (
+      {list.loading && !list.data ? <Loading /> : !certList.length ? <Empty title="No certificates in this range" /> : (
         <Table head={["Employee", "Programme", "Number", "Issued", "Expires"]}>
-          {list.data.map((c) => (
+          {certList.map((c) => (
             <tr key={c.id}>
               <td className="px-4 py-2">{c.employee_name}</td>
               <td className="px-4 py-2">{c.program}</td>

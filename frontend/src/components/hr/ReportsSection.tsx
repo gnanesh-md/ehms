@@ -28,6 +28,9 @@ function Runner() {
   const [f, setF] = useState({ date_from: today.slice(0, 8) + "01", date_to: today, department_id: "", branch_id: "", employee_category: "", year: String(new Date().getFullYear()), month: String(new Date().getMonth() + 1) })
   const [report, setReport] = useState<Report | null>(null)
   const [busy, run] = useRun()
+  const reportsList = Array.isArray(cat.data) ? cat.data : []
+  const departmentsList = Array.isArray(refs.data?.departments) ? refs.data.departments : []
+
   const params = () => {
     const p: Record<string, string> = {}
     if (RANGE_REPORTS.includes(key)) Object.assign(p, { date_from: f.date_from, date_to: f.date_to })
@@ -38,6 +41,10 @@ function Runner() {
   const go = () => run("run", () => hr.get<Report>(`/api/v1/reports/hr/${key}`, params())).then((r) => r && setReport(r))
   if (cat.loading && !cat.data) return <Loading />
   if (cat.error) return <ErrorState error={cat.error} />
+
+  const reportRows = Array.isArray(report?.rows) ? report.rows : []
+  const reportCols = Array.isArray(report?.columns) ? report.columns : []
+
   return (
     <div className="space-y-4">
       <Panel>
@@ -45,7 +52,7 @@ function Runner() {
           <Field label="Report">
             <select className={filterCls + " max-w-none"} value={key} onChange={(e) => { setKey(e.target.value); setReport(null) }}>
               <option value="">Choose…</option>
-              {cat.data!.map((r) => <option key={r.key} value={r.key} disabled={!r.available}>{r.title}{r.available ? "" : " (no access)"}</option>)}
+              {reportsList.map((r) => <option key={r.key} value={r.key} disabled={!r.available}>{r.title}{r.available ? "" : " (no access)"}</option>)}
             </select>
           </Field>
           {RANGE_REPORTS.includes(key) && (
@@ -62,7 +69,7 @@ function Runner() {
           )}
           {["employees", "headcount", "attendance_summary", "leave_balances"].includes(key) && (
             <>
-              <Field label="Department"><select className={filterCls} value={f.department_id} onChange={(e) => setF({ ...f, department_id: e.target.value })}><option value="">All</option>{refs.data?.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</select></Field>
+              <Field label="Department"><select className={filterCls} value={f.department_id} onChange={(e) => setF({ ...f, department_id: e.target.value })}><option value="">All</option>{departmentsList.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</select></Field>
               <Field label="Category"><select className={filterCls} value={f.employee_category} onChange={(e) => setF({ ...f, employee_category: e.target.value })}><option value="">All</option>{EMPLOYEE_CATEGORIES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></Field>
             </>
           )}
@@ -72,15 +79,15 @@ function Runner() {
         </div>
       </Panel>
       {report && (
-        <Panel title={`${report.title} · ${report.rows.length} rows · ${fmtDateTime(report.generated_at)}`}>
-          {!report.rows.length ? <Empty title="No rows" /> : (
-            <Table head={report.columns.map((c) => c.label)}>
-              {report.rows.slice(0, 500).map((r, i) => (
-                <tr key={i}>{report.columns.map((c) => <td key={c.key} className="px-4 py-1.5 whitespace-nowrap">{r[c.key] === null || r[c.key] === undefined ? "—" : String(r[c.key])}</td>)}</tr>
+        <Panel title={`${report.title || "Report"} · ${reportRows.length} rows · ${fmtDateTime(report.generated_at)}`}>
+          {!reportRows.length ? <Empty title="No rows" /> : (
+            <Table head={reportCols.map((c) => c.label)}>
+              {reportRows.slice(0, 500).map((r, i) => (
+                <tr key={i}>{reportCols.map((c) => <td key={c.key} className="px-4 py-1.5 whitespace-nowrap">{r[c.key] === null || r[c.key] === undefined ? "—" : String(r[c.key])}</td>)}</tr>
               ))}
             </Table>
           )}
-          {report.rows.length > 500 && <p className="text-xs text-gray-500 mt-2">Showing 500 of {report.rows.length}; the CSV has all rows.</p>}
+          {reportRows.length > 500 && <p className="text-xs text-gray-500 mt-2">Showing 500 of {reportRows.length}; the CSV has all rows.</p>}
         </Panel>
       )}
     </div>
@@ -108,11 +115,12 @@ function ScheduleButton({ reportKey, filters }: { reportKey: string; filters: Re
 
 function Scheduled() {
   const runs = useHr(() => hr.get<any[]>("/api/v1/reports/hr/runs"), [])
+  const runsList = Array.isArray(runs.data) ? runs.data : []
   return (
     <Panel title="Delivered reports">
-      {runs.loading && !runs.data ? <Loading /> : !runs.data?.length ? <Empty title="No scheduled report runs for you yet" /> : (
+      {runs.loading && !runs.data ? <Loading /> : !runsList.length ? <Empty title="No scheduled report runs for you yet" /> : (
         <Table head={["Report", "Generated", "Rows", "Status", ""]}>
-          {runs.data.map((r) => (
+          {runsList.map((r) => (
             <tr key={r.id}>
               <td className="px-4 py-2">{r.report}</td>
               <td className="px-4 py-2">{fmtDateTime(r.created_at)}</td>
@@ -132,17 +140,19 @@ export function Announcements({ canEdit }: { canEdit: boolean }) {
   const list = useHr(() => hr.get<any[]>("/api/v1/hr/announcements"), [])
   const [f, setF] = useState<any>(null)
   const [busy, run] = useRun()
+  const annList = Array.isArray(list.data) ? list.data : []
+  const departmentsList = Array.isArray(refs.data?.departments) ? refs.data.departments : []
   return (
     <div>
       <PageHeader title="Announcements" subtitle="Shown in My HR and the notification bell for the audience you choose" actions={canEdit && <Btn variant="primary" onClick={() => setF({ title: "", body: "", priority: "normal", everyone: true, departments: [] as string[], expires_at: "" })}><Megaphone className="w-3.5 h-3.5" /> New announcement</Btn>} />
       <Panel>
-        {list.loading && !list.data ? <Loading /> : !list.data?.length ? <Empty title="No announcements" /> : (
+        {list.loading && !list.data ? <Loading /> : !annList.length ? <Empty title="No announcements" /> : (
           <ul className="divide-y divide-[#DDE2EC]">
-            {list.data.map((a) => (
+            {annList.map((a) => (
               <li key={a.id} className="py-2.5">
                 <div className="flex justify-between gap-2"><span className="font-medium text-gray-900">{a.title}{a.priority === "important" && <span className="ml-2 text-[11px] text-rose-700 font-semibold">important</span>}</span><span className="text-[11px] text-gray-400">{fmtDateTime(a.published_at)} · {a.created_by}</span></div>
                 <p className="text-sm text-gray-600 whitespace-pre-wrap mt-0.5">{a.body}</p>
-                <p className="text-[11px] text-gray-400 mt-1">{a.audience.all ? "Everyone" : `${(a.audience.departments ?? []).length} departments`}{a.expires_at && ` · until ${fmtDateTime(a.expires_at)}`}</p>
+                <p className="text-[11px] text-gray-400 mt-1">{a.audience?.all ? "Everyone" : `${(a.audience?.departments ?? []).length} departments`}{a.expires_at && ` · until ${fmtDateTime(a.expires_at)}`}</p>
               </li>
             ))}
           </ul>
@@ -157,7 +167,7 @@ export function Announcements({ canEdit }: { canEdit: boolean }) {
             <label className="flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" checked={f.everyone} onChange={(e) => setF({ ...f, everyone: e.target.checked })} /> Everyone</label>
             {!f.everyone && (
               <div className="max-h-48 overflow-y-auto border border-[#DDE2EC] rounded p-2 space-y-1 bg-white">
-                {refs.data?.departments.map((d) => <label key={d.id} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.departments.includes(d.id)} onChange={(e) => setF({ ...f, departments: e.target.checked ? [...f.departments, d.id] : f.departments.filter((x: string) => x !== d.id) })} />{d.name}</label>)}
+                {departmentsList.map((d) => <label key={d.id} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={f.departments.includes(d.id)} onChange={(e) => setF({ ...f, departments: e.target.checked ? [...f.departments, d.id] : f.departments.filter((x: string) => x !== d.id) })} />{d.name}</label>)}
               </div>
             )}
             <Field label="Expires"><input type="datetime-local" className={inputCls} value={f.expires_at} onChange={(e) => setF({ ...f, expires_at: e.target.value })} /></Field>

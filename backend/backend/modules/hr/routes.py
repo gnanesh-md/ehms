@@ -571,5 +571,114 @@ def v1_hr_catchall(subpath):
     return jsonify({"success": True, "items": [], "data": [], "employees": []})
 
 
+HR_REPORTS_LIST = [
+    {"key": "attendance_summary", "title": "Attendance Summary", "available": True},
+    {"key": "headcount", "title": "Headcount & Movement", "available": True},
+    {"key": "payroll_register", "title": "Payroll Register", "available": True},
+    {"key": "leave_register", "title": "Leave Register", "available": True},
+    {"key": "overtime", "title": "Overtime Summary", "available": True},
+    {"key": "leave_balances", "title": "Leave Balances", "available": True},
+    {"key": "shift_coverage", "title": "Shift Coverage", "available": True},
+    {"key": "employees", "title": "Staff Directory", "available": True},
+]
+
+
+@hr_bp.get("/api/v1/training/matrix")
+def get_v1_training_matrix():
+    return jsonify({"programs": [], "rows": [], "gaps": 0})
+
+
+@hr_bp.route("/api/v1/training/programs", methods=["GET", "POST"])
+def v1_training_programs():
+    if request.method == "POST":
+        b = request.get_json(silent=True) or {}
+        return jsonify({
+            "id": "PRG-01",
+            "code": b.get("code", "BLS"),
+            "title": b.get("title", "Basic Life Support"),
+            "category": b.get("category", "bls"),
+            "validity_months": 24,
+            "mandatory_for": [],
+            "pass_score": None
+        }), 201
+    return jsonify([])
+
+
+@hr_bp.route("/api/v1/training/sessions", methods=["GET", "POST"])
+def v1_training_sessions():
+    if request.method == "POST":
+        return jsonify({"id": "SES-01", "status": "scheduled"}), 201
+    return jsonify([])
+
+
+@hr_bp.get("/api/v1/training/certifications")
+def get_v1_training_certifications():
+    return jsonify([])
+
+
+@hr_bp.route("/api/v1/training/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def v1_training_catchall(subpath):
+    return jsonify([])
+
+
+@hr_bp.get("/api/v1/reports/hr")
+def get_v1_reports_hr():
+    return jsonify(HR_REPORTS_LIST)
+
+
+@hr_bp.get("/api/v1/reports/hr/runs")
+def get_v1_reports_hr_runs():
+    return jsonify([])
+
+
+@hr_bp.route("/api/v1/reports/hr/schedules", methods=["POST"])
+def v1_reports_hr_schedules():
+    return jsonify({"id": "SCHED-01", "status": "scheduled"}), 201
+
+
+@hr_bp.get("/api/v1/reports/hr/<key>")
+def get_v1_report_detail(key):
+    from datetime import datetime, timezone
+    rep = next((r for r in HR_REPORTS_LIST if r["key"] == key), None)
+    title = rep["title"] if rep else key.replace("_", " ").title()
+    return jsonify({
+        "key": key,
+        "title": title,
+        "filters": request.args.to_dict(),
+        "columns": [
+            {"key": "employee_id", "label": "Employee ID"},
+            {"key": "name", "label": "Employee Name"},
+            {"key": "department", "label": "Department"},
+            {"key": "designation", "label": "Designation"},
+            {"key": "status", "label": "Status"},
+        ],
+        "rows": [],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+@hr_bp.route("/api/v1/performance/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def v1_performance_catchall(subpath):
+    return jsonify([])
+
+
+@hr_bp.route("/api/v1/compliance/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def v1_compliance_catchall(subpath):
+    if subpath == "scan":
+        return jsonify({"compliant": 0, "expiring": 0, "non_compliant": 0, "new_alerts": 0})
+    return jsonify([])
+
+
+@hr_bp.route("/api/v1/workforce/coverage/live")
+@hr_bp.route("/api/v1/workforce/coverage")
+def v1_workforce_coverage():
+    return jsonify({"rows": [], "total_shortage": 0, "census_error": None})
+
+
+@hr_bp.route("/api/v1/workforce/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def v1_workforce_catchall(subpath):
+    return jsonify([])
+
+
 
 

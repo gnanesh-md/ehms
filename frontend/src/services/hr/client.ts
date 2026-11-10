@@ -101,6 +101,55 @@ function sanitizeHrResponse(path: string, data: any): any {
       attention: Array.isArray(d.attention) ? d.attention : [],
     }
   }
+  if (path.includes("/training/matrix")) {
+    return {
+      programs: Array.isArray(data?.programs) ? data.programs : [],
+      rows: Array.isArray(data?.rows) ? data.rows : [],
+      gaps: typeof data?.gaps === "number" ? data.gaps : 0,
+    }
+  }
+
+  if (path.endsWith("/reports/hr") || path === "/api/v1/reports/hr") {
+    if (Array.isArray(data)) return data
+    if (Array.isArray(data?.items)) return data.items
+    if (Array.isArray(data?.reports)) return data.reports
+    return [
+      { key: "attendance_summary", title: "Attendance Summary", available: true },
+      { key: "headcount", title: "Headcount & Movement", available: true },
+      { key: "payroll_register", title: "Payroll Register", available: true },
+      { key: "leave_register", title: "Leave Register", available: true },
+      { key: "overtime", title: "Overtime Summary", available: true },
+      { key: "leave_balances", title: "Leave Balances", available: true },
+      { key: "shift_coverage", title: "Shift Coverage", available: true },
+      { key: "employees", title: "Staff Directory", available: true },
+    ]
+  }
+
+  if (path.includes("/reports/hr/runs")) {
+    return Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : [])
+  }
+
+  if (path.includes("/reports/hr/")) {
+    return {
+      ...data,
+      columns: Array.isArray(data?.columns) ? data.columns : [],
+      rows: Array.isArray(data?.rows) ? data.rows : [],
+      generated_at: data?.generated_at || new Date().toISOString(),
+    }
+  }
+
+  if (path.includes("/training/programs") || path.includes("/training/sessions") || path.includes("/training/certifications") || path.includes("/enrollments")) {
+    if (Array.isArray(data)) return data
+    if (Array.isArray(data?.items)) return data.items
+    return []
+  }
+
+  if (path.includes("/performance/reviews") || path.includes("/performance/cycles") || path.includes("/compliance/alerts") || path.includes("/compliance/records")) {
+    if (Array.isArray(data)) return data
+    if (Array.isArray(data?.items)) return data.items
+    return []
+  }
+
   return data
 }
 

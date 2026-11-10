@@ -22,11 +22,12 @@ export default function PerformanceSection({ canManage }: { canManage: boolean }
 export function Reviews({ mine }: { mine?: boolean }) {
   const list = useHr(() => hr.get<Review[]>("/api/v1/performance/reviews", { mine: mine || undefined }), [])
   const [open, setOpen] = useState<Review | null>(null)
+  const reviewList = Array.isArray(list.data) ? list.data : []
   return (
     <Panel title={mine ? "My reviews" : "Performance reviews"}>
-      {list.loading && !list.data ? <Loading /> : !list.data?.length ? <Empty title="No reviews" hint={mine ? "Reviews appear when HR launches a cycle." : "Launch a review cycle to create reviews."} /> : (
+      {list.loading && !list.data ? <Loading /> : !reviewList.length ? <Empty title="No reviews" hint={mine ? "Reviews appear when HR launches a cycle." : "Launch a review cycle to create reviews."} /> : (
         <Table head={["Employee", "Cycle", "Reviewer", "Stage", "Manager rating", "Final"]}>
-          {list.data.map((r) => (
+          {reviewList.map((r) => (
             <tr key={r.id} className="hover:bg-[#F8FAFC] cursor-pointer" onClick={() => setOpen(r)}>
               <td className="px-4 py-2">{r.employee_name}</td>
               <td className="px-4 py-2">{r.cycle}</td>
@@ -45,7 +46,9 @@ export function Reviews({ mine }: { mine?: boolean }) {
 
 function ReviewDrawer({ review, onClose, onDone }: { review: Review; onClose: () => void; onDone: () => void }) {
   const field = review.status === "self_assessment" ? "self_score" : "manager_score"
-  const [scores, setScores] = useState<Record<string, number>>(Object.fromEntries(review.scores.map((s) => [s.criterion, (s[field] as number) ?? 0])))
+  const scoresList = Array.isArray(review.scores) ? review.scores : []
+  const goalsList = Array.isArray(review.goals) ? review.goals : []
+  const [scores, setScores] = useState<Record<string, number>>(Object.fromEntries(scoresList.map((s) => [s.criterion, (s[field] as number) ?? 0])))
   const [comments, setComments] = useState("")
   const [busy, run] = useRun()
   const submit = () =>
@@ -56,7 +59,7 @@ function ReviewDrawer({ review, onClose, onDone }: { review: Review; onClose: ()
     <Drawer open wide title={`${review.employee_name} · ${review.cycle}`} onClose={onClose} footer={editable && <><Btn onClick={onClose}>Close</Btn><Btn variant="primary" busy={busy === "s"} onClick={submit}>Submit {stepLabel[review.status]?.toLowerCase()}</Btn></>}>
       <p className="text-xs text-gray-500 mb-3">Stage: {humanize(review.status)} · scale 1–{review.rating_scale}. Only the person whose step it is can submit; the server enforces it.</p>
       <Table head={["Criterion", "Weight", "Self", "Manager"]}>
-        {review.scores.map((s) => (
+        {scoresList.map((s) => (
           <tr key={s.criterion}>
             <td className="px-4 py-2">{s.label}</td>
             <td className="px-4 py-2 tabular-nums">{s.weight}%</td>
@@ -78,10 +81,10 @@ function ReviewDrawer({ review, onClose, onDone }: { review: Review; onClose: ()
       {review.self_comments && <p className="text-sm mt-3"><span className="text-gray-500 font-medium">Employee:</span> {review.self_comments}</p>}
       {review.manager_comments && <p className="text-sm mt-1"><span className="text-gray-500 font-medium">Manager:</span> {review.manager_comments}</p>}
       {review.hr_comments && <p className="text-sm mt-1"><span className="text-gray-500 font-medium">HR:</span> {review.hr_comments}</p>}
-      {!!review.goals.length && (
+      {!!goalsList.length && (
         <div className="mt-4">
           <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Goals</h4>
-          <ul className="text-sm space-y-1">{review.goals.map((g) => <li key={g.id}>{g.title} {g.target && <span className="text-gray-400">(target {g.target})</span>} — {g.progress}%</li>)}</ul>
+          <ul className="text-sm space-y-1">{goalsList.map((g) => <li key={g.id}>{g.title} {g.target && <span className="text-gray-400">(target {g.target})</span>} — {g.progress}%</li>)}</ul>
         </div>
       )}
       {editable && <div className="mt-4"><Field label="Comments"><textarea rows={3} className={inputCls} value={comments} onChange={(e) => setComments(e.target.value)} /></Field></div>}
@@ -94,16 +97,17 @@ function Cycles() {
   const [f, setF] = useState<any>(null)
   const [goal, setGoal] = useState<any>(null)
   const [busy, run] = useRun()
-  const total = (rows: { weight: number }[]) => rows.reduce((a, b) => a + Number(b.weight || 0), 0)
+  const cycleList = Array.isArray(list.data) ? list.data : []
+  const total = (rows: { weight: number }[]) => (rows || []).reduce((a, b) => a + Number(b.weight || 0), 0)
   return (
     <Panel title="Review cycles" actions={<Btn variant="primary" onClick={() => setF({ name: "", period_start: "", period_end: "", rating_scale: 5, criteria: { default: [{ code: "quality", label: "Quality of work", weight: 40 }, { code: "teamwork", label: "Teamwork", weight: 30 }, { code: "reliability", label: "Reliability & attendance", weight: 30 }] } })}><Plus className="w-3.5 h-3.5" /> New cycle</Btn>}>
-      {list.loading && !list.data ? <Loading /> : !list.data?.length ? <Empty title="No review cycles" /> : (
+      {list.loading && !list.data ? <Loading /> : !cycleList.length ? <Empty title="No review cycles" /> : (
         <Table head={["Cycle", "Period", "Criteria sets", "Status", ""]}>
-          {list.data.map((c) => (
+          {cycleList.map((c) => (
             <tr key={c.id}>
               <td className="px-4 py-2">{c.name}</td>
               <td className="px-4 py-2">{fmtDate(c.period_start)} – {fmtDate(c.period_end)}</td>
-              <td className="px-4 py-2 text-xs">{Object.keys(c.criteria).map(humanize).join(", ")}</td>
+              <td className="px-4 py-2 text-xs">{Object.keys(c.criteria || {}).map(humanize).join(", ")}</td>
               <td className="px-4 py-2"><StatusBadge value={c.status === "active" ? "success" : "draft"} label={humanize(c.status)} /></td>
               <td className="px-4 py-2 text-right whitespace-nowrap">
                 {c.status !== "closed" && <Btn variant="ghost" busy={busy === c.id} onClick={() => run(c.id, () => hr.post<{ reviews_created: number }>(`/api/v1/performance/cycles/${c.id}/launch`), (r) => `${r.reviews_created} reviews created`).then(() => list.reload())}>Launch reviews</Btn>}
